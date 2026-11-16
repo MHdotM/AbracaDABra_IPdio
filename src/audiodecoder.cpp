@@ -40,7 +40,7 @@ audioFifo_t audioFifo[2];
 AudioDecoder::AudioDecoder(AudioRecorder *recorder, QObject *parent) : QObject(parent)
 {
     m_outFifoIdx = 0;
-    m_outFifoPtr = &audioFifo[m_outFifoIdx];
+    m_outFifoPtr = &m_outFifo[m_outFifoIdx];
 
     m_outBufferPtr = new int16_t[AUDIO_DECODER_BUFFER_SIZE];
 
@@ -371,7 +371,7 @@ void AudioDecoder::setOutput(int sampleRate, int numChannels)
 {
     // toggle index 0->1 or 1->0
     m_outFifoIdx = (m_outFifoIdx + 1) & 0x1;
-    m_outFifoPtr = &audioFifo[m_outFifoIdx];
+    m_outFifoPtr = &m_outFifo[m_outFifoIdx];
 
     m_outFifoPtr->sampleRate = sampleRate;
     m_outFifoPtr->numChannels = numChannels;

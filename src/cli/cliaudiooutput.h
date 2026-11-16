@@ -27,6 +27,7 @@
 #ifndef CLIAUDIOOUTPUT_H
 #define CLIAUDIOOUTPUT_H
 
+#include <QByteArray>
 #include <QObject>
 #include <QThread>
 #include <atomic>
@@ -54,6 +55,8 @@ public:
 
 public slots:
     void run();
+signals:
+    void chunkReady(const QByteArray &pcm, int sampleRate, int numChannels);
 
 private:
     void ensureStream(uint32_t sampleRate, uint8_t numChannels);
@@ -84,6 +87,9 @@ public slots:
 
     // linear gain in [0.0, 1.0]; thread-safe, may be called from any thread
     void setVolume(float linear);
+
+signals:
+    void audioChunk(const QByteArray &pcm, int sampleRate, int numChannels);
 
 private:
     QThread *m_thread;

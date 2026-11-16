@@ -28,6 +28,8 @@
 
 #include <algorithm>
 
+#include <QDir>
+#include <QFile>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonParseError>
@@ -45,6 +47,9 @@ WebServer::WebServer(DabCliApp *app, AudioStreamer *streamer, QObject *parent)
     m_server = new QTcpServer(this);
     connect(m_server, &QTcpServer::newConnection, this, &WebServer::onNewConnection);
     connect(m_streamer, &AudioStreamer::audioChunk, this, &WebServer::onAudioChunk, Qt::QueuedConnection);
+    m_streamIdleTimer = new QTimer(this);
+    m_streamIdleTimer->setSingleShot(true);
+    connect(m_streamIdleTimer, &QTimer::timeout, this, &WebServer::onStreamIdleTimeout);
 }
 
 bool WebServer::listen(const QHostAddress &address, quint16 port)
@@ -87,6 +92,10 @@ void WebServer::onSocketDisconnected()
         return;
     }
     m_streamClients.remove(socket);
+    if (m_streamClients.isEmpty() && m_app->isStreamDecoupled())
+    {
+        m_streamIdleTimer->start(6000);
+    }
     m_clients.remove(socket);
     socket->deleteLater();
 }
@@ -182,6 +191,155 @@ void WebServer::handleRequest(QTcpSocket *socket, const QString &method, const Q
         QJsonObject o;
         o["channels"] = DabCliApp::channelsJson();
         sendJson(socket, QJsonDocument(o));
+        return;
+    }
+
+    if ("GET" == method && "/api/stationlist" == p)
+    {
+        QJsonObject res;
+        QJsonArray stations;
+        bool scanned = false;
+        QFile f(QStringLiteral("/opt/dab-radio/radio_state.json"));
+        if (f.open(QIODevice::ReadOnly))
+        {
+            QJsonParseError perr;
+            QJsonDocument doc = QJsonDocument::fromJson(f.readAll(), &perr);
+            if (QJsonParseError::NoError == perr.error && doc.isObject())
+            {
+                QJsonObject state = doc.object();
+                stations = state.value(QStringLiteral("stations")).toArray();
+                scanned = state.value(QStringLiteral("stations_scanned")).toBool(false);
+            }
+        }
+        res[QStringLiteral("stations")] = stations;
+        res[QStringLiteral("stations_scanned")] = scanned;
+        sendJson(socket, QJsonDocument(res));
+        return;
+    }
+
+    if ("POST" == method && "/api/stationlist" == p)
+    {
+        QJsonParseError perr;
+        QJsonDocument doc = QJsonDocument::fromJson(body, &perr);
+        if (QJsonParseError::NoError != perr.error || !doc.isObject())
+        {
+            sendError(socket, 400, "Bad Request", "Invalid JSON body");
+            return;
+        }
+        QJsonObject reqObj = doc.object();
+        QJsonArray stations = reqObj.value(QStringLiteral("stations")).toArray();
+        bool scanned = reqObj.value(QStringLiteral("stations_scanned")).toBool(true);
+
+        QJsonObject state;
+        QFile rf(QStringLiteral("/opt/dab-radio/radio_state.json"));
+        if (rf.open(QIODevice::ReadOnly))
+        {
+            QJsonParseError rerr;
+            QJsonDocument rdoc = QJsonDocument::fromJson(rf.readAll(), &rerr);
+            if (QJsonParseError::NoError == rerr.error && rdoc.isObject())
+            {
+                state = rdoc.object();
+            }
+            rf.close();
+        }
+
+        state[QStringLiteral("stations")] = stations;
+        state[QStringLiteral("stations_scanned")] = scanned;
+
+        QDir().mkpath(QStringLiteral("/opt/dab-radio"));
+        QFile wf(QStringLiteral("/opt/dab-radio/radio_state.json"));
+        if (!wf.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        {
+            sendError(socket, 500, "Internal Server Error", "Cannot write radio_state.json");
+            return;
+        }
+        wf.write(QJsonDocument(state).toJson(QJsonDocument::Indented));
+        wf.close();
+
+        QJsonObject res;
+        res[QStringLiteral("ok")] = true;
+        res[QStringLiteral("count")] = stations.size();
+        sendJson(socket, QJsonDocument(res));
+        return;
+    }
+
+    if ("POST" == method && "/api/tii/update" == p)
+    {
+        QString err;
+        if (!m_app->requestTiiDbUpdate(&err))
+        {
+            sendError(socket, 409, "Conflict", err);
+            return;
+        }
+        QJsonObject res;
+        res[QStringLiteral("ok")] = true;
+        sendJson(socket, QJsonDocument(res));
+        return;
+    }
+
+    if ("POST" == method && "/api/stream" == p)
+    {
+        QJsonParseError perr;
+        QJsonDocument doc = QJsonDocument::fromJson(body, &perr);
+        if (QJsonParseError::NoError != perr.error || !doc.isObject())
+        {
+            sendError(socket, 400, "Bad Request", "Invalid JSON body");
+            return;
+        }
+        QJsonObject o = doc.object();
+        uint32_t sid = 0;
+        if (o.value("sid").isString())
+        {
+            sid = o.value("sid").toString().toUInt(nullptr, 0);
+        }
+        else
+        {
+            sid = uint32_t(o.value("sid").toDouble());
+        }
+        uint8_t scids = uint8_t(o.value("scids").toInt(0));
+        QString channel = o.value("channel").toString();
+        bool decoupled = false;
+        QString err;
+        if (!m_app->requestStreamService(channel, sid, scids, &decoupled, &err))
+        {
+            sendError(socket, 409, "Conflict", err);
+            return;
+        }
+        if (decoupled && m_streamClients.isEmpty())
+        {
+            m_streamIdleTimer->start(6000);
+        }
+        else if (!decoupled)
+        {
+            m_streamIdleTimer->stop();
+        }
+        QJsonObject res;
+        res["ok"] = true;
+        res["decoupled"] = decoupled;
+        sendJson(socket, QJsonDocument(res));
+        return;
+    }
+
+    if ("POST" == method && "/api/stream/stop" == p)
+    {
+        m_streamIdleTimer->stop();
+        m_app->requestStreamStop();
+        QJsonObject res;
+        res["ok"] = true;
+        sendJson(socket, QJsonDocument(res));
+        return;
+    }
+
+    if ("GET" == method && "/api/stream/slideshow" == p)
+    {
+        QByteArray data;
+        QString contentType;
+        if (!m_app->currentStreamSlide(&data, &contentType))
+        {
+            sendError(socket, 404, "Not Found", "No slide available yet");
+            return;
+        }
+        sendResponse(socket, 200, "OK", contentType.toLatin1(), data);
         return;
     }
 
@@ -347,6 +505,7 @@ void WebServer::startStreamClient(QTcpSocket *socket, bool icyMetadataRequested)
     header += "\r\n";
     socket->write(header);
 
+    m_streamIdleTimer->stop();
     m_streamClients.insert(socket);
     qCInfo(webServer) << "Audio stream client connected, format" << sampleRate << "Hz" << numChannels << "ch, icy metadata"
                        << icyMetadataRequested;
@@ -436,27 +595,67 @@ void WebServer::onAudioChunk(const QByteArray &pcm, int sampleRate, int numChann
     }
 }
 
+void WebServer::onStreamIdleTimeout()
+{
+    if (m_streamClients.isEmpty() && m_app->isStreamDecoupled())
+    {
+        m_app->requestStreamStop();
+    }
+}
+
 QString WebServer::indexHtml()
 {
     QString html = QStringLiteral(R"HTML(<!DOCTYPE html>
-<html lang="en">
+<html lang="de">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AbracaDABra CLI Web-UI</title>
+<title>AbracaDABra &mdash; dnt IPdio mini Web-UI</title>
 <style>
   :root { color-scheme: dark; }
-  body { font-family: system-ui, sans-serif; background:#111; color:#eee; margin:0; padding:1.5rem; }
-  h1 { font-size:1.3rem; margin:0 0 1rem 0; }
-  .card { background:#1b1b1b; border:1px solid #333; border-radius:8px; padding:1rem; margin-bottom:1rem; }
-  .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(160px,1fr)); gap:.75rem; }
-  .stat label { display:block; font-size:.75rem; color:#999; text-transform:uppercase; letter-spacing:.05em; }
-  .stat span { font-size:1.1rem; }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; background:#111; color:#eee; margin:0; padding:1.25rem; }
+  h1 { font-size:1.25rem; margin:0 0 1rem 0; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:.5rem; }
+  .badge { font-size:.75rem; font-weight:600; color:#86efac; background:#14532d66; border:1px solid #166534; padding:.2rem .55rem; border-radius:999px; }
+  .layout { display:flex; flex-direction:column; gap:1rem; max-width:1440px; margin:0 auto; }
+  .infoGroup { order:1; display:flex; flex-direction:column; gap:1rem; }
+  .sideList { order:2; display:flex; flex-direction:column; }
+  .ensembleCard { order:3; }
+  @media (min-width: 960px) {
+    .layout {
+      display:grid;
+      grid-template-columns: minmax(320px, 390px) minmax(0, 1fr);
+      gap:1rem;
+      align-items:start;
+    }
+    .sideList {
+      order:0;
+      grid-column:1;
+      grid-row:1 / span 2;
+      position:sticky;
+      top:1rem;
+      max-height:calc(100vh - 4.5rem);
+    }
+    .infoGroup { order:0; grid-column:2; grid-row:1; }
+    .ensembleCard { order:0; grid-column:2; grid-row:2; }
+  }
+  .card { background:#1b1b1b; border:1px solid #333; border-radius:8px; padding:1rem; }
+  .cardHead { display:flex; align-items:center; justify-content:space-between; gap:.5rem; margin-bottom:.65rem; }
+  .cardHead h2 { font-size:1rem; margin:0; }
+  .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(150px,1fr)); gap:.75rem; }
+  .stat.wide { grid-column: 1 / -1; }
+  .stat label { display:block; font-size:.72rem; color:#999; text-transform:uppercase; letter-spacing:.05em; }
+  .stat span { font-size:1.05rem; word-break:break-word; }
   table { width:100%; border-collapse: collapse; }
-  th, td { text-align:left; padding:.4rem .5rem; border-bottom:1px solid #333; font-size:.9rem; }
-  button, select { background:#2a2a2a; color:#eee; border:1px solid #444; border-radius:6px; padding:.4rem .7rem; cursor:pointer; }
+  th, td { text-align:left; padding:.45rem .5rem; border-bottom:1px solid #333; font-size:.9rem; }
+  button, select, input[type="search"] { background:#2a2a2a; color:#eee; border:1px solid #444; border-radius:6px; padding:.4rem .7rem; font-size:.88rem; }
+  button, select { cursor:pointer; }
   button:hover { background:#3a3a3a; }
-  button.playing { background:#2e7d32; border-color:#2e7d32; }
+  button:disabled { opacity:.55; cursor:default; }
+  button.tuned { background:#1d4ed8; border-color:#2563eb; color:#fff; }
+  button.playing { background:#2e7d32; border-color:#2e7d32; color:#fff; }
+  button.btnSm { padding:.28rem .55rem; font-size:.8rem; }
+  .btnGroup { display:inline-flex; gap:.35rem; align-items:center; flex-shrink:0; }
   #player { width:100%; margin-top:.5rem; }
   .row { display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; }
   .statusRow { display:flex; gap:1rem; align-items:flex-start; flex-wrap:wrap; }
@@ -464,142 +663,641 @@ QString WebServer::indexHtml()
   #slide.visible { display:block; }
   details.card summary { cursor:pointer; font-weight:600; }
   details.card[open] summary { margin-bottom:.75rem; }
+  .muted { color:#9ca3af; font-size:.82rem; }
+  #stationFilter { width:100%; margin-bottom:.6rem; }
+  .stationScroll { overflow-y:auto; flex:1; min-height:140px; max-height:60vh; padding-right:.2rem; }
+  @media (min-width: 960px) {
+    .stationScroll { max-height:none; }
+  }
+  .stRow { display:flex; align-items:center; justify-content:space-between; gap:.5rem; padding:.45rem .5rem; border-bottom:1px solid #2a2a2a; border-radius:6px; }
+  .stRow.active { background:#1e293b88; border-color:#334155; }
+  .stMeta { display:flex; align-items:center; gap:.45rem; min-width:0; flex:1; }
+  .stName { font-size:.88rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .chBadge { font-family:monospace; font-size:.72rem; color:#93c5fd; background:#1e3a8a55; border:1px solid #1e40af; border-radius:4px; padding:.1rem .35rem; flex-shrink:0; }
+  .advSubBar { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:.5rem; margin-top:.85rem; padding-top:.75rem; border-top:1px solid #2a2a2a; }
+  .cuWrap { margin-top:.85rem; padding-top:.75rem; border-top:1px solid #2a2a2a; }
+  .cuHead { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:.4rem; margin-bottom:.45rem; font-size:.85rem; }
+  .cuBar { position:relative; height:24px; background:#262626; border:1px solid #383838; border-radius:6px; overflow:hidden; }
+  .cuSeg { position:absolute; top:0; bottom:0; border-right:1px solid #111; transition:filter .15s; cursor:pointer; }
+  .cuSeg:hover { filter:brightness(1.2); }
+  .cuSeg.active { box-shadow:inset 0 0 0 2px #fff; z-index:2; }
+  .cuLegend { display:flex; flex-wrap:wrap; gap:.35rem; margin-top:.55rem; }
+  .cuChip { display:inline-flex; align-items:center; gap:.35rem; font-size:.75rem; background:#242424; border:1px solid #333; border-radius:5px; padding:.18rem .45rem; }
+  .cuChip.active { border-color:#60a5fa; background:#1e293b; color:#fff; }
+  .cuDot { width:9px; height:9px; border-radius:2px; flex-shrink:0; }
 </style>
 </head>
 <body>
-<h1>AbracaDABra &mdash; headless DAB/DAB+ receiver</h1>
+<h1>
+  <span>AbracaDABra &mdash; dnt IPdio mini DAB/DAB+</span>
+  <span class="badge">S/PDIF 100% + Web-UI</span>
+</h1>
 
-<div class="card">
-  <div class="row">
-    <select id="channelSelect"></select>
-    <button onclick="tune()">Tune</button>
-  </div>
-</div>
+<div class="layout">
+  <aside class="card sideList">
+    <div class="cardHead">
+      <h2>Senderliste <span id="stationCount" class="muted">(0)</span></h2>
+      <button id="scanBtn" class="btnSm" onclick="toggleScan()">Suchlauf</button>
+    </div>
+    <div id="scanInfo" class="muted" style="margin-bottom:.45rem; display:none;"></div>
+    <input type="search" id="stationFilter" placeholder="Sender filtern..." oninput="renderStationList()">
+    <div id="stationList" class="stationScroll">
+      <div class="muted">Lade Senderliste...</div>
+    </div>
+  </aside>
 
-<div class="card statusRow">
-  <img id="slide" alt="Station image">
-  <div class="grid" style="flex:1">
-    <div class="stat"><label>Ensemble</label><span id="ensemble">-</span></div>
-    <div class="stat"><label>Channel</label><span id="channel">-</span></div>
-    <div class="stat"><label>Frequency</label><span id="freq">-</span></div>
-    <div class="stat"><label>Sync</label><span id="sync">-</span></div>
-    <div class="stat"><label>SNR</label><span id="snr">-</span></div>
-    <div class="stat"><label>Now playing</label><span id="nowplaying">-</span></div>
-    <div class="stat"><label>Title</label><span id="title">-</span></div>
-    <div class="stat"><label>DL Plus info</label><span id="dlPlusTags">-</span></div>
-  </div>
-</div>
+  <div class="infoGroup">
+    <div class="card">
+      <div class="row">
+        <select id="channelSelect"></select>
+        <button onclick="tune()">Tune</button>
+        <span id="tuneFeedback" class="muted"></span>
+      </div>
+    </div>
 
-<details class="card">
-  <summary>Advanced / technical info</summary>
-  <div class="grid">
-    <div class="stat"><label>Freq. offset</label><span id="freqOffset">-</span></div>
-    <div class="stat"><label>RF level</label><span id="rfLevel">-</span></div>
-    <div class="stat"><label>Gain</label><span id="gain">-</span></div>
-    <div class="stat"><label>Sub-ch bitrate</label><span id="advBitRate">-</span></div>
-    <div class="stat"><label>FIB errors</label><span id="fibErrors">-</span></div>
-    <div class="stat"><label>MSC CRC errors</label><span id="mscCrcErrors">-</span></div>
-    <div class="stat"><label>RS bit errors</label><span id="rsBitErrors">-</span></div>
-    <div class="stat"><label>RS uncorrectable</label><span id="rsUncorrectable">-</span></div>
-  </div>
-</details>
+    <div class="card statusRow">
+      <img id="slide" alt="Station image">
+      <div class="grid" style="flex:1">
+        <div class="stat"><label>Ensemble</label><span id="ensemble">-</span></div>
+        <div class="stat"><label>Channel</label><span id="channel">-</span></div>
+        <div class="stat"><label>Frequency</label><span id="freq">-</span></div>
+        <div class="stat"><label>Sync</label><span id="sync">-</span></div>
+        <div class="stat"><label>SNR</label><span id="snr">-</span></div>
+        <div class="stat"><label>Now playing</label><span id="nowplaying">-</span></div>
+        <div class="stat"><label>DAB-Zeit</label><span id="dabTime">-</span></div>
+        <div class="stat"><label>Title (DL+)</label><span id="title">-</span></div>
+        <div class="stat wide"><label>Radiotext (DLS)</label><span id="dlsText">-</span></div>
+        <div class="stat wide"><label>DL Plus info</label><span id="dlPlusTags">-</span></div>
+      </div>
+    </div>
 
-<div class="card">
-  <table>
-    <thead><tr><th>Service</th><th>Sub-ch</th><th>Bitrate</th><th></th></tr></thead>
-    <tbody id="services"></tbody>
-  </table>
-  <div class="row">
-    <span id="playerStatus">Not playing</span>
-    <button onclick="stopPlayback()">Stop</button>
-    <label for="volume">Volume</label>
-    <input type="range" id="volume" min="0" max="100" value="100" oninput="setVolume(this.value)">
+    <div id="streamCard" class="card statusRow" style="display:none; border-color:#2e7d32;">
+      <img id="streamSlide" alt="Stream cover" style="width:96px; height:96px; object-fit:contain; border-radius:6px; background:#222; border:1px solid #333; display:none;">
+      <div class="grid" style="flex:1">
+        <div class="stat wide" style="display:flex; align-items:center; justify-content:space-between; gap:.5rem; flex-wrap:wrap;">
+          <span class="badge">Webstream entkoppelt (S/PDIF bleibt unabhängig)</span>
+          <button id="syncStreamBtn" class="btnSm" onclick="syncToStream()">Auf S/PDIF übernehmen</button>
+        </div>
+        <div class="stat"><label>Webstream Sender</label><span id="streamLabel">-</span></div>
+        <div class="stat"><label>Webstream Title (DL+)</label><span id="streamTitle">-</span></div>
+        <div class="stat wide"><label>Webstream Radiotext (DLS)</label><span id="streamDls">-</span></div>
+      </div>
+    </div>
+
+    <details class="card">
+      <summary>Advanced / technical info</summary>
+      <div class="grid">
+        <div class="stat"><label>Ensemble ID</label><span id="advEid">-</span></div>
+        <div class="stat"><label>Service ID (SID)</label><span id="advSid">-</span></div>
+        <div class="stat"><label>TII Code</label><span id="advTii">-</span></div>
+        <div class="stat"><label>Standort (TII DB)</label><span id="advTx">-</span></div>
+        <div class="stat"><label>Freq. offset</label><span id="freqOffset">-</span></div>
+        <div class="stat"><label>Sub-ch / Schutz</label><span id="advBitRate">-</span></div>
+        <div class="stat"><label>FIB errors</label><span id="fibErrors">-</span></div>
+        <div class="stat"><label>MSC CRC errors</label><span id="mscCrcErrors">-</span></div>
+        <div class="stat"><label>RS bit errors</label><span id="rsBitErrors">-</span></div>
+        <div class="stat"><label>RS uncorrectable</label><span id="rsUncorrectable">-</span></div>
+      </div>
+      <div class="advSubBar">
+        <div>
+          <div id="tiiMulti" class="muted">TII-Empfang: -</div>
+          <div id="tiiDbInfo" class="muted">TII-Datenbank: -</div>
+        </div>
+        <button id="tiiUpdateBtn" class="btnSm" onclick="updateTiiDb()">TII-DB laden</button>
+      </div>
+      <div class="cuWrap">
+        <div class="cuHead">
+          <strong>Ensemble-Zusammenstellung</strong>
+          <span id="cuSummary" class="muted">0 / 864 CU</span>
+        </div>
+        <div id="cuBar" class="cuBar"></div>
+        <div id="cuLegend" class="cuLegend"></div>
+      </div>
+    </details>
   </div>
-  <audio id="player" style="display:none"></audio>
+
+  <div class="card ensembleCard">
+    <div class="cardHead">
+      <h2>Aktuelles Ensemble</h2>
+      <span id="ensembleBadge" class="muted"></span>
+    </div>
+    <table>
+      <thead><tr><th>Service</th><th>Sub-ch</th><th>Bitrate</th><th>Aktion</th></tr></thead>
+      <tbody id="services"></tbody>
+    </table>
+    <div class="row" style="margin-top:.75rem;">
+      <span id="playerStatus">Not playing</span>
+      <button onclick="stopPlayback()">Stop</button>
+      <label for="volume">Volume</label>
+      <input type="range" id="volume" min="0" max="100" value="100" oninput="setVolume(this.value)">
+    </div>
+    <audio id="player" style="display:none"></audio>
+  </div>
 </div>
 
 <script>
+let lastSlideVersion = 0;
+let lastStreamSlideVersion = 0;
+let lastStatus = null;
+let scannedStations = [];
+let scannedLoaded = false;
+let scanning = false;
+let scanAbort = false;
+let tuneSeq = 0;
+let browserPlayingKey = '';
+let browserStreaming = false;
+let lastListRefresh = 0;
+const CU_PALETTE = ['#4285F4','#EA4335','#FBBC05','#34A853','#9C27B0','#FF9800','#00BCD4','#795548'];
+
+function normSid(v){
+  if (v === null || v === undefined || v === '') return '';
+  const n = Number(v);
+  if (!Number.isNaN(n) && n > 0) return '0x' + n.toString(16).toLowerCase();
+  return String(v).trim().toLowerCase();
+}
+
+function svcKey(sid, scids){
+  return normSid(sid) + ':' + Number(scids || 0);
+}
+
+function isServiceActive(sid, scids, ch, statusObj){
+  const s = statusObj || lastStatus;
+  if (!s || !s.current || !s.current.playing) return false;
+  const curSid = normSid(s.current.sid);
+  const tgtSid = normSid(sid);
+  if (!curSid || curSid !== tgtSid) return false;
+  if (Number(s.current.scids || 0) !== Number(scids || 0)) return false;
+  if (ch && s.channel && String(s.channel).toUpperCase() !== String(ch).toUpperCase()) return false;
+  return true;
+}
+
+function isStreamServiceActive(sid, scids, ch, statusObj){
+  const s = statusObj || lastStatus;
+  if (s && s.stream && s.stream.decoupled && s.stream.sid) {
+    if (normSid(s.stream.sid) !== normSid(sid)) return false;
+    if (Number(s.stream.scids || 0) !== Number(scids || 0)) return false;
+    if (ch && s.channel && String(s.channel).toUpperCase() !== String(ch).toUpperCase()) return false;
+    return true;
+  }
+  const hasCur = Boolean(s && s.current && s.current.playing && s.current.sid);
+  if (hasCur) return isServiceActive(sid, scids, ch, s);
+  return browserPlayingKey === svcKey(sid, scids);
+}
+
+async function ensureStatus(){
+  if (lastStatus) return lastStatus;
+  try {
+    const r = await fetch('/api/status');
+    lastStatus = await r.json();
+  } catch (e) {}
+  return lastStatus;
+}
+
 async function loadChannels(){
   const r = await fetch('/api/channels');
   const j = await r.json();
   const sel = document.getElementById('channelSelect');
   sel.innerHTML = '';
-  j.channels.forEach(c => {
+  (j.channels || []).forEach(c => {
     const opt = document.createElement('option');
     opt.value = c.channel;
     opt.textContent = c.channel + ' (' + (c.frequencyKHz/1000).toFixed(3) + ' MHz)';
     sel.appendChild(opt);
   });
 }
+
 async function tune(){
   const ch = document.getElementById('channelSelect').value;
   await fetch('/api/tune', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({channel: ch})});
+  setTimeout(refresh, 400);
 }
 
-let lastSlideVersion = 0;
+async function updateTiiDb(){
+  const btn = document.getElementById('tiiUpdateBtn');
+  const info = document.getElementById('tiiDbInfo');
+  btn.disabled = true;
+  info.textContent = 'TII-Datenbank: Download gestartet...';
+  try {
+    const r = await fetch('/api/tii/update', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+    if (!r.ok) {
+      const errTxt = await r.text();
+      info.textContent = 'TII-Datenbank Fehler: ' + errTxt;
+      btn.disabled = false;
+    } else {
+      setTimeout(refresh, 800);
+    }
+  } catch (e) {
+    info.textContent = 'TII-Datenbank Download fehlgeschlagen.';
+    btn.disabled = false;
+  }
+}
+
+async function tuneOnly(sid, scids, ch){
+  const mySeq = ++tuneSeq;
+  const fb = document.getElementById('tuneFeedback');
+  const tgtSid = normSid(sid);
+  const tgtScids = Number(scids || 0);
+  const s = await ensureStatus();
+  const curCh = (s && s.channel) ? String(s.channel).toUpperCase() : '';
+  const wantCh = ch ? String(ch).toUpperCase() : '';
+
+  if (wantCh && wantCh !== curCh) {
+    if (fb) fb.textContent = 'Wechsle auf Kanal ' + ch + '...';
+    await fetch('/api/tune', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({channel: ch})
+    });
+    for (let i = 0; i < 18; i++) {
+      if (mySeq !== tuneSeq) return false;
+      await new Promise(res => setTimeout(res, 300));
+      try {
+        const sr = await fetch('/api/status');
+        const sj = await sr.json();
+        lastStatus = sj;
+        const sameCh = sj.channel && String(sj.channel).toUpperCase() === wantCh;
+        const hasSvc = Array.isArray(sj.services) && sj.services.some(x => normSid(x.sid) === tgtSid);
+        if (sameCh && hasSvc) break;
+      } catch (e) {}
+    }
+  }
+
+  if (mySeq !== tuneSeq) return false;
+  if (fb) fb.textContent = 'Stelle Sender ein...';
+  let ok = false;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if (mySeq !== tuneSeq) return false;
+    try {
+      const resp = await fetch('/api/service', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({sid: sid, scids: tgtScids})
+      });
+      if (resp.ok) {
+        ok = true;
+        break;
+      }
+    } catch (e) {}
+    await new Promise(res => setTimeout(res, 500));
+  }
+  if (fb) fb.textContent = '';
+  await refresh();
+  return ok;
+}
+
+async function tuneService(sid, scids, ch){
+  await tuneOnly(sid, scids, ch);
+}
+
+async function loadStationList(){
+  try {
+    const r = await fetch('/api/stationlist');
+    const j = await r.json();
+    if (Array.isArray(j.stations)) {
+      scannedStations = j.stations;
+      scannedLoaded = true;
+      renderStationList();
+    }
+  } catch (e) { console.error(e); }
+}
+
+async function syncToStream(){
+  if (!lastStatus || !lastStatus.stream || !lastStatus.stream.decoupled || !lastStatus.stream.sid) return;
+  await tuneOnly(lastStatus.stream.sid, lastStatus.stream.scids, lastStatus.channel || '');
+}
+
+function makeActionButtons(sid, scids, ch){
+  const wrap = document.createElement('div');
+  wrap.className = 'btnGroup';
+  const active = isServiceActive(sid, scids, ch);
+  const bPlaying = browserStreaming && isStreamServiceActive(sid, scids, ch);
+
+  const btnTune = document.createElement('button');
+  btnTune.className = 'btnSm' + (active ? ' tuned' : '');
+  btnTune.textContent = 'Tune';
+  btnTune.title = 'Lokal (S/PDIF) einstellen (im gleichen Ensemble bleibt Webstream unabhängig)';
+  btnTune.onclick = () => tuneService(sid, scids, ch);
+
+  const btnPlay = document.createElement('button');
+  btnPlay.className = 'btnSm' + (bPlaying ? ' playing' : '');
+  btnPlay.textContent = bPlaying ? 'Playing' : 'Play';
+  btnPlay.title = 'Im Browser abspielen (im gleichen Ensemble unabhängig von S/PDIF)';
+  btnPlay.onclick = () => playService(sid, scids, ch);
+
+  wrap.appendChild(btnTune);
+  wrap.appendChild(btnPlay);
+  return wrap;
+}
+
+function renderStationList(){
+  const box = document.getElementById('stationList');
+  const cnt = document.getElementById('stationCount');
+  const q = (document.getElementById('stationFilter').value || '').trim().toLowerCase();
+  cnt.textContent = '(' + scannedStations.length + ')';
+  box.innerHTML = '';
+
+  const filtered = scannedStations.filter(st => {
+    if (!q) return true;
+    const name = String(st.name || st.label || '').toLowerCase();
+    const ch = String(st.channel || '').toLowerCase();
+    return name.includes(q) || ch.includes(q);
+  });
+
+  if (!filtered.length) {
+    const msg = document.createElement('div');
+    msg.className = 'muted';
+    msg.textContent = scannedStations.length
+      ? 'Keine Treffer fuer diesen Filter.'
+      : 'Noch kein Suchlauf gespeichert. Klicke auf "Suchlauf" oder nutze am Frontpanel Reply -> Sendersuchlauf.';
+    box.appendChild(msg);
+    return;
+  }
+
+  filtered.forEach(st => {
+    const sid = st.sid || st.id;
+    const scids = Number(st.scids || 0);
+    const ch = st.channel || '';
+    const active = isServiceActive(sid, scids, ch);
+
+    const row = document.createElement('div');
+    row.className = 'stRow' + (active ? ' active' : '');
+
+    const meta = document.createElement('div');
+    meta.className = 'stMeta';
+
+    if (ch) {
+      const badge = document.createElement('span');
+      badge.className = 'chBadge';
+      badge.textContent = ch;
+      meta.appendChild(badge);
+    }
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'stName';
+    nameEl.textContent = st.name || st.label || sid;
+    nameEl.title = (st.name || st.label || sid) + (ch ? ' (' + ch + ')' : '');
+    meta.appendChild(nameEl);
+
+    row.appendChild(meta);
+    row.appendChild(makeActionButtons(sid, scids, ch));
+    box.appendChild(row);
+  });
+}
+
+function renderServicesTable(s){
+  const tbody = document.getElementById('services');
+  tbody.innerHTML = '';
+  const ch = (s && s.channel) ? s.channel : '';
+  const eb = document.getElementById('ensembleBadge');
+  if (eb) eb.textContent = ch ? ('Kanal ' + ch) : '';
+
+  (s && s.services ? s.services : []).forEach(svc => {
+    const tr = document.createElement('tr');
+
+    const tdLabel = document.createElement('td');
+    tdLabel.textContent = svc.label;
+    tr.appendChild(tdLabel);
+
+    const tdSub = document.createElement('td');
+    tdSub.textContent = svc.subChId;
+    tr.appendChild(tdSub);
+
+    const tdBr = document.createElement('td');
+    tdBr.textContent = svc.bitRate + ' kbps';
+    tr.appendChild(tdBr);
+
+    const tdAct = document.createElement('td');
+    tdAct.appendChild(makeActionButtons(svc.sid, svc.scids, ch));
+    tr.appendChild(tdAct);
+
+    tbody.appendChild(tr);
+  });
+}
+
+function renderCuLayout(s){
+  const bar = document.getElementById('cuBar');
+  const leg = document.getElementById('cuLegend');
+  const sum = document.getElementById('cuSummary');
+  if (!bar || !leg || !sum) return;
+  const subs = (s && Array.isArray(s.subchannels)) ? s.subchannels : [];
+  bar.innerHTML = '';
+  leg.innerHTML = '';
+  let usedCu = 0;
+
+  subs.forEach((sc, idx) => {
+    const numCU = Number(sc.numCU || 0);
+    const startCU = Number(sc.startCU || 0);
+    usedCu += numCU;
+    const color = CU_PALETTE[idx % CU_PALETTE.length];
+    const lbl = (Array.isArray(sc.labels) && sc.labels.length) ? sc.labels.join(', ') : ('SubCh ' + sc.subChId);
+    const tip = 'SubCh ' + sc.subChId + ': ' + lbl + ' | ' + numCU + ' CU [' + startCU + '..' + (startCU + Math.max(0, numCU - 1)) + '] | ' + (sc.bitRate ? (sc.bitRate + ' kbps ') : '') + (sc.codec || '') + (sc.protection ? (' (' + sc.protection + ')') : '');
+
+    const seg = document.createElement('div');
+    seg.className = 'cuSeg' + (sc.active ? ' active' : '');
+    seg.style.left = ((startCU / 864) * 100).toFixed(2) + '%';
+    seg.style.width = ((numCU / 864) * 100).toFixed(2) + '%';
+    seg.style.background = color;
+    seg.title = tip;
+    bar.appendChild(seg);
+
+    const chip = document.createElement('div');
+    chip.className = 'cuChip' + (sc.active ? ' active' : '');
+    chip.title = tip;
+    const dot = document.createElement('span');
+    dot.className = 'cuDot';
+    dot.style.background = color;
+    const txt = document.createElement('span');
+    txt.textContent = lbl + ' (' + numCU + ' CU)';
+    chip.appendChild(dot);
+    chip.appendChild(txt);
+    leg.appendChild(chip);
+  });
+
+  const freeCu = Math.max(0, 864 - usedCu);
+  const pct = ((usedCu / 864) * 100).toFixed(1);
+  sum.textContent = usedCu + ' / 864 CU (' + pct + '%) - ' + freeCu + ' CU frei';
+}
+
+function renderAllLists(){
+  renderStationList();
+  if (lastStatus) renderServicesTable(lastStatus);
+}
+
+async function toggleScan(){
+  if (scanning) {
+    scanAbort = true;
+    document.getElementById('scanBtn').disabled = true;
+    return;
+  }
+  scanning = true;
+  scanAbort = false;
+  const btn = document.getElementById('scanBtn');
+  const info = document.getElementById('scanInfo');
+  btn.textContent = 'Abbrechen';
+  info.style.display = 'block';
+  info.textContent = 'Starte Band-III Suchlauf...';
+
+  const prev = lastStatus;
+  const prevCh = prev && prev.channel ? prev.channel : '';
+  const prevSid = prev && prev.current && prev.current.playing ? prev.current.sid : '';
+  const prevScids = prev && prev.current ? Number(prev.current.scids || 0) : 0;
+
+  try {
+    const chResp = await fetch('/api/channels');
+    const chJson = await chResp.json();
+    const channels = (chJson.channels || []).map(c => c.channel);
+    const found = {};
+
+    for (let i = 0; i < channels.length; i++) {
+      if (scanAbort) break;
+      const ch = channels[i];
+      info.textContent = 'Suche Kanal ' + ch + ' (' + (i + 1) + '/' + channels.length + ') - ' + Object.keys(found).length + ' Sender';
+      await fetch('/api/tune', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({channel: ch})
+      });
+      await new Promise(res => setTimeout(res, 1300));
+      if (scanAbort) break;
+      let stResp = await fetch('/api/status');
+      let st = await stResp.json();
+      if (Number(st.syncLevel || 0) > 0) {
+        await new Promise(res => setTimeout(res, 1100));
+        if (scanAbort) break;
+        stResp = await fetch('/api/status');
+        st = await stResp.json();
+        (st.services || []).forEach(svc => {
+          const sid = svc.sid;
+          const scids = Number(svc.scids || 0);
+          const label = String(svc.label || '').trim();
+          if (sid && label) {
+            const key = ch + ':' + normSid(sid) + ':' + scids;
+            found[key] = {id: sid, sid: sid, scids: scids, name: label, channel: ch};
+          }
+        });
+      }
+    }
+
+    const list = Object.values(found).sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+    if (list.length > 0) {
+      scannedStations = list;
+      await fetch('/api/stationlist', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({stations: list, stations_scanned: true})
+      });
+      renderStationList();
+      info.textContent = 'Suchlauf fertig: ' + list.length + ' Sender gespeichert.';
+      if (prevSid && prevCh) {
+        await tuneOnly(prevSid, prevScids, prevCh);
+      } else {
+        await tuneOnly(list[0].sid, list[0].scids, list[0].channel);
+      }
+    } else {
+      info.textContent = scanAbort ? 'Suchlauf abgebrochen.' : 'Keine Sender gefunden.';
+    }
+  } catch (e) {
+    console.error(e);
+    info.textContent = 'Fehler beim Suchlauf.';
+  } finally {
+    scanning = false;
+    scanAbort = false;
+    btn.disabled = false;
+    btn.textContent = 'Suchlauf';
+  }
+}
 )HTML");
 
 #if HAVE_MP3LAME
-    // The stream is a real MP3 elementary stream, so it is played back through a standard
-    // <audio> element instead of being manually decoded. This is what makes browsers treat the
-    // page as genuine media playback
     html += QStringLiteral(R"HTML(
 const player = document.getElementById('player');
 let lastSid = null;
 let lastScids = 0;
+let lastCh = '';
 
 if ('mediaSession' in navigator) {
-  navigator.mediaSession.setActionHandler('play', () => { if (null !== lastSid) playService(lastSid, lastScids); });
-  navigator.mediaSession.setActionHandler('pause', stopPlayback);
-  navigator.mediaSession.setActionHandler('stop', stopPlayback);
+  navigator.mediaSession.setActionHandler('play', () => { if (null !== lastSid) playService(lastSid, lastScids, lastCh); });
+  navigator.mediaSession.setActionHandler('pause', () => stopPlayback(true));
+  navigator.mediaSession.setActionHandler('stop', () => stopPlayback(true));
 }
 
 function setVolume(percent){
   player.volume = percent / 100;
 }
 
-function stopPlayback(){
+function stopPlayback(notifyBackend = true){
   player.pause();
   player.removeAttribute('src');
   player.load();
+  browserStreaming = false;
+  browserPlayingKey = '';
   document.getElementById('playerStatus').textContent = 'Not playing';
   if ('mediaSession' in navigator) {
     navigator.mediaSession.playbackState = 'paused';
     navigator.mediaSession.setPositionState();
   }
+  if (notifyBackend) {
+    fetch('/api/stream/stop', {method:'POST'}).then(() => setTimeout(refresh, 150)).catch(() => {});
+  }
+  renderAllLists();
 }
 
-async function playService(sid, scids){
+async function playService(sid, scids, ch){
   lastSid = sid;
-  lastScids = scids;
-  stopPlayback();
-  await fetch('/api/service', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({sid: sid, scids: scids})});
+  lastScids = Number(scids || 0);
+  lastCh = ch || '';
+  stopPlayback(false);
 
+  const curStatus = await ensureStatus();
+  const curCh = (curStatus && curStatus.channel) ? String(curStatus.channel).toUpperCase() : '';
+  const wantCh = ch ? String(ch).toUpperCase() : '';
+  const needMuxTune = !curStatus || !curStatus.current || !curStatus.current.playing || (wantCh && curCh && wantCh !== curCh);
+
+  if (needMuxTune) {
+    await tuneOnly(sid, scids, ch);
+  } else {
+    try {
+      const sr = await fetch('/api/stream', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({sid: sid, scids: Number(scids || 0), channel: ch || ''})
+      });
+      if (!sr.ok) {
+        await tuneOnly(sid, scids, ch);
+      } else {
+        const sj = await sr.json().catch(() => ({}));
+        if (sj.decoupled) {
+          await new Promise(res => setTimeout(res, 200));
+        }
+        await refresh();
+      }
+    } catch (e) {
+      await tuneOnly(sid, scids, ch);
+    }
+  }
+
+  browserStreaming = true;
+  browserPlayingKey = svcKey(sid, scids);
   document.getElementById('playerStatus').textContent = 'Playing...';
   if ('mediaSession' in navigator) {
     navigator.mediaSession.playbackState = 'playing';
-    // Tells MPRIS/OS media-control widgets this is a genuine live broadcast (rather than an
-    // unknown/invalid session), which some of them require before they display real metadata
-    // instead of falling back to a generic "<app> is playing media" placeholder.
     try {
       navigator.mediaSession.setPositionState({duration: Infinity, playbackRate: 1, position: 0});
-    } catch (e) { /* not fatal, some browsers reject Infinity */ }
+    } catch (e) {}
   }
+  renderAllLists();
   player.src = '/stream/audio?_=' + Date.now();
   player.volume = document.getElementById('volume').value / 100;
   try {
     await player.play();
   } catch (e) {
     console.error(e);
-    document.getElementById('playerStatus').textContent = 'Not playing';
+    stopPlayback(true);
   }
 }
-player.onerror = stopPlayback;
+player.onerror = () => stopPlayback(true);
 )HTML");
 #else
-    // Raw PCM streamed over HTTP and played via the Web Audio API: browsers don't reliably play
-    // an <audio> element pointed at a WAV stream of unbounded length, so we decode it ourselves.
-    // (Fallback used when the CLI was built without libmp3lame; see mp3encoder.h.)
     html += QStringLiteral(R"HTML(
 let audioCtx = null;
 let gainNode = null;
@@ -608,8 +1306,8 @@ let streamXhr = null;
 let leftoverBytes = new Uint8Array(0);
 
 if ('mediaSession' in navigator) {
-  navigator.mediaSession.setActionHandler('pause', stopPlayback);
-  navigator.mediaSession.setActionHandler('stop', stopPlayback);
+  navigator.mediaSession.setActionHandler('pause', () => stopPlayback(true));
+  navigator.mediaSession.setActionHandler('stop', () => stopPlayback(true));
 }
 
 function setVolume(percent){
@@ -618,17 +1316,23 @@ function setVolume(percent){
   }
 }
 
-function stopPlayback(){
+function stopPlayback(notifyBackend = true){
   if (streamXhr) {
     const x = streamXhr;
     streamXhr = null;
     x.abort();
   }
   leftoverBytes = new Uint8Array(0);
+  browserStreaming = false;
+  browserPlayingKey = '';
   document.getElementById('playerStatus').textContent = 'Not playing';
   if ('mediaSession' in navigator) {
     navigator.mediaSession.playbackState = 'paused';
   }
+  if (notifyBackend) {
+    fetch('/api/stream/stop', {method:'POST'}).then(() => setTimeout(refresh, 150)).catch(() => {});
+  }
+  renderAllLists();
 }
 
 function feedPcm(chunk, numChannels, sampleRate){
@@ -660,15 +1364,13 @@ function feedPcm(chunk, numChannels, sampleRate){
   src.connect(gainNode);
   const now = audioCtx.currentTime;
   if (nextStartTime < now) {
-    nextStartTime = now + 0.2;  // buffer a bit before (re)starting to avoid glitches
+    nextStartTime = now + 0.2;
   }
   src.start(nextStartTime);
   nextStartTime += buffer.duration;
 }
 
-async function playService(sid, scids){
-  // Must happen synchronously, before any await: iOS Safari only allows an AudioContext to be
-  // created/unlocked while still inside the original user-gesture call stack (the click handler).
+async function playService(sid, scids, ch){
   if (!audioCtx) {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     gainNode = audioCtx.createGain();
@@ -678,22 +1380,50 @@ async function playService(sid, scids){
   if ('suspended' === audioCtx.state) {
     audioCtx.resume();
   }
-  // iOS Safari additionally requires an actual buffer to be started (not just resume()) within
-  // the gesture to fully unlock audio output; a 1-sample silent buffer is the standard trick.
   const unlockBuffer = audioCtx.createBuffer(1, 1, 22050);
   const unlockSrc = audioCtx.createBufferSource();
   unlockSrc.buffer = unlockBuffer;
   unlockSrc.connect(audioCtx.destination);
   unlockSrc.start(0);
 
-  stopPlayback();
-  await fetch('/api/service', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({sid: sid, scids: scids})});
+  stopPlayback(false);
 
+  const curStatus = await ensureStatus();
+  const curCh = (curStatus && curStatus.channel) ? String(curStatus.channel).toUpperCase() : '';
+  const wantCh = ch ? String(ch).toUpperCase() : '';
+  const needMuxTune = !curStatus || !curStatus.current || !curStatus.current.playing || (wantCh && curCh && wantCh !== curCh);
+
+  if (needMuxTune) {
+    await tuneOnly(sid, scids, ch);
+  } else {
+    try {
+      const sr = await fetch('/api/stream', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({sid: sid, scids: Number(scids || 0), channel: ch || ''})
+      });
+      if (!sr.ok) {
+        await tuneOnly(sid, scids, ch);
+      } else {
+        const sj = await sr.json().catch(() => ({}));
+        if (sj.decoupled) {
+          await new Promise(res => setTimeout(res, 200));
+        }
+        await refresh();
+      }
+    } catch (e) {
+      await tuneOnly(sid, scids, ch);
+    }
+  }
+
+  browserStreaming = true;
+  browserPlayingKey = svcKey(sid, scids);
   nextStartTime = 0;
   document.getElementById('playerStatus').textContent = 'Playing...';
   if ('mediaSession' in navigator) {
     navigator.mediaSession.playbackState = 'playing';
   }
+  renderAllLists();
 
   const xhr = new XMLHttpRequest();
   xhr.open('GET', '/stream/audio?_=' + Date.now(), true);
@@ -728,7 +1458,10 @@ async function playService(sid, scids){
   xhr.onloadend = function(){
     if (streamXhr === xhr) {
       streamXhr = null;
+      browserStreaming = false;
+      browserPlayingKey = '';
       document.getElementById('playerStatus').textContent = 'Not playing';
+      renderAllLists();
     }
   };
   xhr.send();
@@ -744,35 +1477,75 @@ async function refresh(){
   try {
     const r = await fetch('/api/status');
     const s = await r.json();
+    lastStatus = s;
+
     document.getElementById('ensemble').textContent = s.ensemble && s.ensemble.valid ? (s.ensemble.label || '(unnamed)') : '-';
     document.getElementById('channel').textContent = s.channel || '-';
     document.getElementById('freq').textContent = s.frequencyKHz ? (s.frequencyKHz/1000).toFixed(3) + ' MHz' : '-';
     document.getElementById('sync').textContent = fmtSync(s.syncLevel);
     document.getElementById('snr').textContent = (s.snr ?? 0).toFixed(1) + ' dB';
     document.getElementById('nowplaying').textContent = (s.current && s.current.playing) ? s.current.label : '(none)';
-    // prefer DL Plus title/artist over the raw DLS text, same precedence as the CLI's own
-    // display (DabCliApp::buildCurrentSubtitleLocked()), so the page shows the same info
+    document.getElementById('dabTime').textContent = s.dabTime || '-';
+
+    const chSel = document.getElementById('channelSelect');
+    if (s.channel && chSel && chSel.value !== s.channel && document.activeElement !== chSel) {
+      chSel.value = s.channel;
+    }
+
     const cur = s.current || {};
     let titleText = '-';
     if (cur.dlPlusTitle) {
       titleText = cur.dlPlusArtist ? (cur.dlPlusArtist + ' - ' + cur.dlPlusTitle) : cur.dlPlusTitle;
-    } else if (cur.dls) {
-      titleText = cur.dls;
     }
     document.getElementById('title').textContent = titleText;
+    document.getElementById('dlsText').textContent = (cur.dls && cur.dls.trim()) ? cur.dls : '-';
     const tags = cur.dlPlusTags || [];
     document.getElementById('dlPlusTags').textContent = tags.length ? tags.map(t => t.label + ': ' + t.text).join(' | ') : '-';
 
     const adv = s.advanced || {};
+    document.getElementById('advEid').textContent = adv.eid ? (adv.eid + (adv.ecc ? (' (ECC ' + adv.ecc + ')') : '')) : '-';
+    document.getElementById('advSid').textContent = adv.sid ? (adv.sid + ' (SCIdS ' + (adv.scids ?? 0) + ')') : '-';
+    const tiiList = Array.isArray(adv.tiiList) ? adv.tiiList : [];
+    const topTii = tiiList.length ? tiiList[0] : null;
+    document.getElementById('advTii').textContent = adv.tii ? (adv.tii + (topTii && topTii.levelDb != null ? (' (' + Number(topTii.levelDb).toFixed(1) + ' dB)') : '')) : '-';
+    document.getElementById('advTx').textContent = adv.transmitter ? (adv.transmitter + (adv.tiiPowerKw > 0 ? (' (' + Number(adv.tiiPowerKw).toFixed(1) + ' kW)') : '')) : (adv.tii ? 'TII-DB laden / unbekannt' : '-');
     document.getElementById('freqOffset').textContent = (adv.freqOffsetHz != null) ? (adv.freqOffsetHz/1000).toFixed(2) + ' kHz' : '-';
-    document.getElementById('rfLevel').textContent = (adv.rfLevel != null) ? adv.rfLevel.toFixed(1) + ' dB' : '-';
-    document.getElementById('gain').textContent = (adv.gain != null) ? adv.gain.toFixed(1) + ' dB' : '-';
-    document.getElementById('advBitRate').textContent = adv.bitRate ? adv.bitRate + ' kbps' : '-';
+    let brText = adv.bitRate ? (adv.bitRate + ' kbps') : '-';
+    if (adv.protection) brText += ' · ' + adv.protection;
+    if (adv.subChSize) brText += ' · ' + adv.subChSize + ' CU';
+    document.getElementById('advBitRate').textContent = brText;
     const stats = adv.decodingStats || {};
     document.getElementById('fibErrors').textContent = (stats.fibErrorCntr != null) ? (stats.fibErrorCntr + ' / ' + stats.fibCntr) : '-';
     document.getElementById('mscCrcErrors').textContent = (stats.mscCrcErrorCntr != null) ? stats.mscCrcErrorCntr : '-';
     document.getElementById('rsBitErrors').textContent = (stats.rsBitErrorCntr != null) ? stats.rsBitErrorCntr : '-';
     document.getElementById('rsUncorrectable').textContent = (stats.rsUncorrectableCntr != null) ? stats.rsUncorrectableCntr : '-';
+
+    const tiiMulti = document.getElementById('tiiMulti');
+    if (tiiMulti) {
+      tiiMulti.textContent = tiiList.length
+        ? ('Empfangene TII (' + tiiList.length + '): ' + tiiList.map(x => x.code + (x.location ? (' ' + x.location) : '') + ' (' + Number(x.levelDb || 0).toFixed(1) + ' dB)').join(' | '))
+        : 'TII-Empfang: Noch kein TII-Signal dekodiert';
+    }
+    const db = s.tiiDb || {};
+    const dbEl = document.getElementById('tiiDbInfo');
+    const dbBtn = document.getElementById('tiiUpdateBtn');
+    if (dbEl) {
+      if (!db.supported) {
+        dbEl.textContent = 'TII-Datenbank: FMLIST-Bibliothek nicht einkompiliert';
+      } else if (db.updating) {
+        dbEl.textContent = 'TII-Datenbank: Wird heruntergeladen...';
+      } else if (db.loaded) {
+        dbEl.textContent = 'TII-Datenbank: ' + db.count + ' Sender' + (db.lastUpdate ? (' (Stand: ' + db.lastUpdate + ')') : '');
+      } else {
+        dbEl.textContent = 'TII-Datenbank: Nicht geladen' + (db.status ? (' (' + db.status + ')') : '');
+      }
+    }
+    if (dbBtn) {
+      dbBtn.disabled = Boolean(!db.supported || db.updating);
+      dbBtn.textContent = db.updating ? 'Lade...' : (db.loaded ? 'TII-DB aktualisieren' : 'TII-DB laden');
+    }
+
+    renderCuLayout(s);
 
     const slideImg = document.getElementById('slide');
     const slideVersion = (s.current && s.current.slideVersion) || 0;
@@ -786,32 +1559,99 @@ async function refresh(){
       slideImg.removeAttribute('src');
     }
 
-    if ('mediaSession' in navigator && s.current) {
-      const artist = s.current.dlPlusArtist || '';
-      const title = s.current.dlPlusTitle || s.current.dls || s.current.label || '';
-      const artwork = slideVersion ? [{src: '/api/slideshow?v=' + slideVersion}] : [];
-      navigator.mediaSession.metadata = new MediaMetadata({
-        title: title,
-        artist: artist,
-        album: (s.ensemble && s.ensemble.label) || '',
-        artwork: artwork
-      });
+    const streamObj = s.stream || {};
+    const streamCard = document.getElementById('streamCard');
+    const streamSlideImg = document.getElementById('streamSlide');
+    if (streamCard) {
+      if (streamObj.decoupled) {
+        streamCard.style.display = 'flex';
+        document.getElementById('streamLabel').textContent = streamObj.label || '-';
+        let sTitle = '-';
+        if (streamObj.dlPlusTitle) {
+          sTitle = streamObj.dlPlusArtist ? (streamObj.dlPlusArtist + ' - ' + streamObj.dlPlusTitle) : streamObj.dlPlusTitle;
+        }
+        document.getElementById('streamTitle').textContent = sTitle;
+        document.getElementById('streamDls').textContent = (streamObj.dls && streamObj.dls.trim()) ? streamObj.dls : '-';
+        const sSlideVer = streamObj.slideVersion || 0;
+        if (streamSlideImg) {
+          if (sSlideVer && sSlideVer !== lastStreamSlideVersion) {
+            lastStreamSlideVersion = sSlideVer;
+            streamSlideImg.src = '/api/stream/slideshow?v=' + sSlideVer;
+            streamSlideImg.style.display = 'block';
+          } else if (!sSlideVer) {
+            lastStreamSlideVersion = 0;
+            streamSlideImg.style.display = 'none';
+            streamSlideImg.removeAttribute('src');
+          }
+        }
+      } else {
+        streamCard.style.display = 'none';
+        lastStreamSlideVersion = 0;
+        if (streamSlideImg) {
+          streamSlideImg.style.display = 'none';
+          streamSlideImg.removeAttribute('src');
+        }
+      }
     }
 
-    const tbody = document.getElementById('services');
-    tbody.innerHTML = '';
-    (s.services || []).forEach(svc => {
-      const isPlaying = s.current && s.current.playing && s.current.sid === svc.sid && s.current.scids === svc.scids;
-      const tr = document.createElement('tr');
-      tr.innerHTML = '<td>' + svc.label + '</td><td>' + svc.subChId + '</td><td>' + svc.bitRate + ' kbps</td>' +
-        '<td><button class="' + (isPlaying?'playing':'') + '" onclick="playService(\'' + svc.sid + '\',' + svc.scids + ')">' +
-        (isPlaying ? 'Playing' : 'Play') + '</button></td>';
-      tbody.appendChild(tr);
-    });
+    if ('mediaSession' in navigator) {
+      const metaSrc = (streamObj.decoupled && streamObj.sid) ? streamObj : s.current;
+      if (metaSrc) {
+        const artist = metaSrc.dlPlusArtist || '';
+        const title = metaSrc.dlPlusTitle || metaSrc.dls || metaSrc.label || '';
+        const sVer = metaSrc.slideVersion || 0;
+        const slidePath = (metaSrc === streamObj) ? '/api/stream/slideshow?v=' : '/api/slideshow?v=';
+        const artwork = sVer ? [{src: slidePath + sVer}] : [];
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: title,
+          artist: artist,
+          album: (s.ensemble && s.ensemble.label) || '',
+          artwork: artwork
+        });
+      }
+    }
+
+    if (browserStreaming) {
+      if (streamObj.decoupled && streamObj.sid) {
+        browserPlayingKey = svcKey(streamObj.sid, streamObj.scids);
+        if (typeof lastSid !== 'undefined') {
+          lastSid = streamObj.sid;
+          lastScids = Number(streamObj.scids || 0);
+          lastCh = s.channel || '';
+        }
+      } else if (s && s.current && s.current.playing && s.current.sid) {
+        browserPlayingKey = svcKey(s.current.sid, s.current.scids);
+        if (typeof lastSid !== 'undefined') {
+          lastSid = s.current.sid;
+          lastScids = Number(s.current.scids || 0);
+          lastCh = s.channel || '';
+        }
+      } else {
+        browserPlayingKey = '';
+      }
+    }
+    const pSt = document.getElementById('playerStatus');
+    if (pSt) {
+      if (browserStreaming) {
+        pSt.textContent = streamObj.decoupled
+          ? ('Playing (entkoppelt): ' + (streamObj.label || '...'))
+          : ('Playing: ' + ((s && s.current && s.current.label) ? s.current.label : '...'));
+      } else {
+        pSt.textContent = 'Not playing';
+      }
+    }
+
+    renderServicesTable(s);
+    if (!scanning && Date.now() - lastListRefresh > 6000) {
+      lastListRefresh = Date.now();
+      loadStationList();
+    } else if (scannedLoaded) {
+      renderStationList();
+    }
   } catch (e) { console.error(e); }
 }
-loadChannels();
-refresh();
+loadChannels().then(refresh);
+loadStationList();
 setInterval(refresh, 1500);
 </script>
 </body>

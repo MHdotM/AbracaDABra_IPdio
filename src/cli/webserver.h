@@ -34,6 +34,7 @@
 #include <QSet>
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <QTimer>
 
 #include "config.h"
 
@@ -60,6 +61,7 @@ private slots:
     void onReadyRead();
     void onSocketDisconnected();
     void onAudioChunk(const QByteArray &pcm, int sampleRate, int numChannels);
+    void onStreamIdleTimeout();
 
 private:
     struct ClientState
@@ -80,6 +82,7 @@ private:
     AudioStreamer *m_streamer;
     QHash<QTcpSocket *, ClientState> m_clients;
     QSet<QTcpSocket *> m_streamClients;
+    QTimer *m_streamIdleTimer = nullptr;
 
 #if HAVE_MP3LAME
     // Encoding happens once per incoming PCM chunk and the resulting MP3 bytes are broadcast to

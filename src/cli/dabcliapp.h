@@ -27,7 +27,16 @@
 #ifndef DABCLIAPP_H
 #define DABCLIAPP_H
 
+#include <QDateTime>
+#include <QDir>
+#include <QFileInfo>
 #include <QHostAddress>
+#include <QList>
+#include <QMultiHash>
+#include <QStringList>
+#include "servicelistid.h"
+#include "txdataitem.h"
+#include "txdataloader.h"
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QMap>
@@ -42,6 +51,9 @@
 #include "inputdevice.h"
 #include "radiocontrol.h"
 #include "slideshowapp.h"
+#if HAVE_FMLIST_INTERFACE
+#include "fmlistinterface.h"
+#endif
 
 #if HAVE_PORTAUDIO
 #include "cliaudiooutput.h"
@@ -97,7 +109,10 @@ struct CliServiceInfo
     QString label;
     uint8_t subChId = 0;
     uint16_t subChSize = 0;
+    uint16_t startCU = 0;
     uint16_t bitRate = 0;
+    QString protection;
+    QString codec;
     bool isAudio = false;
 };
 
@@ -118,6 +133,11 @@ public:
     bool requestTuneChannel(const QString &channelLabel, QString *errorOut);
     bool requestTuneFrequency(uint32_t freqKHz, QString *errorOut);
     bool requestService(uint32_t sid, uint8_t scids, QString *errorOut);
+    bool requestStreamService(const QString &channelLabel, uint32_t sid, uint8_t scids, bool *decoupledOut, QString *errorOut);
+    void requestStreamStop();
+    bool isStreamDecoupled() const;
+    bool currentStreamSlide(QByteArray *data, QString *contentType) const;
+    bool requestTiiDbUpdate(QString *errorOut);
 
     // percent in [0, 100]; no-op if local audio output (HAVE_PORTAUDIO / TUI mode) isn't active
     void setVolume(int percent);
@@ -143,6 +163,9 @@ public:
 signals:
     // forwarded (queued) to RadioControl, which lives in its own thread
     void tuneServiceRequested(uint32_t freq, uint32_t SId, uint8_t SCIdS);
+    void tuneSecondaryServiceRequested(uint32_t freq, uint32_t SId, uint8_t SCIdS);
+    void stopSecondaryServiceRequested();
+    void startTiiRequested(bool ena);
 
     // emitted once the graceful shutdown requested via requestShutdown() has completed
     void readyToQuit();
@@ -152,6 +175,19 @@ private slots:
     void onServiceListEntry(const RadioControlEnsemble &ens, const RadioControlServiceComponent &s);
     void onServiceListComplete(const RadioControlEnsemble &ens);
     void onSignalState(uint8_t sync, float snr);
+    void onDabTime(const QDateTime &d);
+    void onDlItemToggle();
+    void onDlItemRunning(bool isRunning);
+    void onTiiData(const RadioControlTIIData &data);
+    void onSecondaryAudioServiceSelection(const RadioControlServiceComponent &s);
+    void onSecondaryStreamStopped();
+    void onStreamAudioParametersInfo(const AudioParameters &params);
+    void onStreamDlComplete(const QString &dl);
+    void onStreamDlPlusObject(const DLPlusObject &object);
+    void onStreamDlItemToggle();
+    void onStreamDlItemRunning(bool isRunning);
+    void onStreamDlReset();
+    void onStreamCurrentSlide(const Slide &slide);
     void onTuneDone(uint32_t freq);
     void onAudioServiceSelection(const RadioControlServiceComponent &s);
     void onAudioParametersInfo(const AudioParameters &params);
@@ -206,6 +242,41 @@ private:
     bool m_isPlaying = false;
     AudioParameters m_audioParams{};
     bool m_haveAudioParams = false;
+    bool m_dlItemRunning = true;
+    QDateTime m_dabTime;
+    QList<dabsdrTii_t> m_tiiList;
+    QMultiHash<ServiceListId, TxDataItem *> m_txTable;
+    QDateTime m_txDbLastUpdate;
+    bool m_tiiDbUpdating = false;
+    QString m_tiiDbStatus;
+#if HAVE_FMLIST_INTERFACE
+    FMListInterface *m_fmlistInterface = nullptr;
+#endif
+#if !HAVE_PORTAUDIO
+    audioFifo_t *m_primaryAudioFifo = nullptr;
+#endif
+    QThread *m_streamAudioDecoderThread = nullptr;
+    AudioDecoder *m_streamAudioDecoder = nullptr;
+    AudioRecorder *m_streamAudioRecorder = nullptr;
+    DLDecoder *m_streamDlDecoder = nullptr;
+    SlideShowApp *m_streamSlideShowApp = nullptr;
+    bool m_streamDecoupled = false;
+    uint32_t m_streamSid = 0;
+    uint8_t m_streamScids = 0;
+    QString m_streamServiceLabel;
+    bool m_streamPlaying = false;
+    AudioParameters m_streamAudioParams{};
+    bool m_streamHaveAudioParams = false;
+    QString m_streamDlsText;
+    QString m_streamDlPlusTitle;
+    QString m_streamDlPlusArtist;
+    QMap<int, QString> m_streamDlPlusTags;
+    bool m_streamDlItemRunning = true;
+    QByteArray m_streamSlideData;
+    QString m_streamSlideContentType;
+    int m_streamSlideVersion = 0;
+    QString buildStreamSubtitleLocked() const;
+    void resetStreamStateLocked();
     bool m_deviceReady = false;
     bool m_shutdownRequested = false;
     QString m_lastDeviceError;

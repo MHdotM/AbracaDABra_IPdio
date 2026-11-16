@@ -27,6 +27,7 @@
 #ifndef RADIOCONTROL_H
 #define RADIOCONTROL_H
 
+#include <atomic>
 #include <QDateTime>
 #include <QDebug>
 #include <QHash>
@@ -382,6 +383,8 @@ public:
     void start(uint32_t freq);
     void exit();
     void tuneService(uint32_t freq, uint32_t SId, uint8_t SCIdS);
+    void tuneSecondaryService(uint32_t freq, uint32_t SId, uint8_t SCIdS);
+    void stopSecondaryService();
     void getEnsembleConfiguration();
     void getEnsembleCSV();
     void getEnsembleCSV_FMLIST();
@@ -412,6 +415,10 @@ signals:
     void tuneInputDevice(uint32_t freq);
     void tuneDone(uint32_t freq);
     void stopAudio();
+    void secondaryAudioServiceSelection(const RadioControlServiceComponent &s);
+    void secondaryAudioData(RadioControlAudioData *pData);
+    void stopSecondaryAudio();
+    void secondaryStreamStopped();
     void serviceListEntry(const RadioControlEnsemble &ens, const RadioControlServiceComponent &slEntry);
     void serviceListComplete(const RadioControlEnsemble &ens);
     void dlDataGroup_Service(const QByteArray &dg);
@@ -458,23 +465,23 @@ private:
 
     struct
     {
-        uint32_t SId;
-        uint8_t SCIdS;
+        uint32_t SId = 0;
+        uint8_t SCIdS = 0;
         struct
         {  // announcement support
-            uint16_t ASu;
+            uint16_t ASu = 0;
             QList<uint8_t> clusterIds;
             uint8_t activeCluster = 0;
-            DabAnnouncement id;
-            QTimer *timeoutTimer;
-            std::atomic<AnnouncementSwitchState> switchState;
-            uint32_t SId;
-            uint8_t SCIdS;
+            DabAnnouncement id = DabAnnouncement::Undefined;
+            QTimer *timeoutTimer = nullptr;
+            std::atomic<AnnouncementSwitchState> switchState{AnnouncementSwitchState::NoAnnouncement};
+            uint32_t SId = 0;
+            uint8_t SCIdS = 0;
 
-            uint16_t enaFlags;
-            bool isOtherService;
-            bool suspendRequest;
-            RadioControlAnnouncementState state;
+            uint16_t enaFlags = 0;
+            bool isOtherService = false;
+            bool suspendRequest = false;
+            RadioControlAnnouncementState state = RadioControlAnnouncementState::None;
         } announcement;
     } m_currentService;
 
@@ -561,6 +568,11 @@ private:
     // wrappers used in callback functions (emit requires class instance)
     void emit_dabEvent(RadioControlEvent *pEvent) { emit dabEvent(pEvent); }
     void emit_audioData(RadioControlAudioData *pData) { emit audioData(pData); }
+    void emit_secondaryAudioData(RadioControlAudioData *pData) { emit secondaryAudioData(pData); }
+    std::atomic<bool> m_streamSecondaryActive{false};
+    uint32_t m_streamSId = 0;
+    uint8_t m_streamSCIdS = 0;
+    uint8_t m_streamSubChId = 0xFF;
     void emit_announcementAudioAvailable() { emit announcementAudioAvailable(); }
     void emit_spectrum(std::shared_ptr<std::vector<float>> data, RadioControlSpectrumType type) { emit signalSpectrum(data, type); }
 

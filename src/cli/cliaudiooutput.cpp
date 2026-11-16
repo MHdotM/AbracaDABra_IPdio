@@ -123,6 +123,7 @@ void CliAudioWorker::run()
         {
             continue;
         }
+        emit chunkReady(data, int(sampleRate), int(numChannels));
         int64_t bytesToRead = data.size();
 
         ensureStream(sampleRate, numChannels);
@@ -170,6 +171,7 @@ CliAudioOutput::CliAudioOutput(QObject *parent) : QObject(parent)
 
     connect(m_thread, &QThread::started, m_worker, &CliAudioWorker::run);
     connect(m_thread, &QThread::finished, m_worker, &QObject::deleteLater);
+    connect(m_worker, &CliAudioWorker::chunkReady, this, &CliAudioOutput::audioChunk);
 
     m_thread->start();
 }

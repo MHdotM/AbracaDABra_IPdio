@@ -98,6 +98,7 @@ protected:
     size_t m_outputBufferSamples;
 
     dabsdrDecoderId_t m_inputDataDecoderId;
+    audioFifo_t m_outFifo[2];
     int m_outFifoIdx;
     audioFifo_t *m_outFifoPtr;
 
