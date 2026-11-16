@@ -81,6 +81,7 @@ int parseCliArguments(QCoreApplication &app, CliConfig *config)
 
     QCommandLineOption gainOpt("gain", "Manual RTL-SDR gain index (default: software AGC).", "index");
     QCommandLineOption hardwareAgcOpt("hardware-agc", "Use the RTL-SDR's own hardware AGC instead of software AGC (RTL-SDR only).");
+    QCommandLineOption bandwidthOpt("bandwidth", "Tuner bandwidth in kHz for rtlsdr/rtltcp (default: 1530, 0 = default).", "kHz");
 
     QCommandLineOption listChannelsOpt("list-channels", "Print the DAB channel table and exit.");
     QCommandLineOption commandlineOnlyOpt("commandline-only", "Disable the interactive terminal dashboard (TUI) and log to commandline instead, "
@@ -103,6 +104,7 @@ int parseCliArguments(QCoreApplication &app, CliConfig *config)
     parser.addOption(portOpt);
     parser.addOption(gainOpt);
     parser.addOption(hardwareAgcOpt);
+    parser.addOption(bandwidthOpt);
     parser.addOption(listChannelsOpt);
     parser.addOption(commandlineOnlyOpt);
     parser.addOption(verboseOpt);
@@ -193,6 +195,17 @@ int parseCliArguments(QCoreApplication &app, CliConfig *config)
         config->manualGainIndex = parser.value(gainOpt).toInt();
     }
     config->hardwareAgc = parser.isSet(hardwareAgcOpt);
+    if (parser.isSet(bandwidthOpt))
+    {
+        bool ok = false;
+        uint32_t bwKHz = parser.value(bandwidthOpt).toUInt(&ok);
+        if (!ok || bwKHz > 4000000u)
+        {
+            fprintf(stderr, "Invalid --bandwidth value '%s' (expected kHz between 0 and 4000000).\n", qPrintable(parser.value(bandwidthOpt)));
+            return 1;
+        }
+        config->bandwidthKHz = bwKHz;
+    }
     config->verboseLevel = verboseLevel;
     config->commandlineOnly = forceCommandlineOnly;
 

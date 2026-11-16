@@ -95,6 +95,7 @@ struct CliConfig
     // automatically based on RF level; RTL-SDR's own hardware AGC often performs worse.
     bool hardwareAgc = false;
     int manualGainIndex = -1;
+    uint32_t bandwidthKHz = 0;
 
     int verboseLevel = 0;
     // true if verboseLevel >= 2 or --commandline-only was given: disables the interactive

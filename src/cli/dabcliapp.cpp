@@ -476,6 +476,7 @@ bool DabCliApp::openInputDevice()
             {
                 dev->setGainMode(RtlGainMode::Software);
             }
+            dev->setBW(m_config.bandwidthKHz * 1000u);
             break;
         }
         case CliDeviceType::RTLTCP:
@@ -494,6 +495,7 @@ bool DabCliApp::openInputDevice()
                 qCCritical(cliApp) << "Could not connect to rtl_tcp at" << m_config.rtlTcpHost << ":" << m_config.rtlTcpPort;
                 return false;
             }
+            dev->setBW(m_config.bandwidthKHz * 1000u);
             break;
         }
     }
