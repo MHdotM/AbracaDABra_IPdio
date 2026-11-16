@@ -2,12 +2,29 @@
 
 Abraca DAB radio is a DAB and DAB+ Software Defined Radio (SDR) application. It works with cheap RTL-SDR (RTL2832U) USB sticks, but also with Airspy devices, SDRplay devices and with devices supported by <a href="https://github.com/pothosware/SoapySDR/wiki">SoapySDR</a>. 
 
+This fork implements some changes for the use as headless tuner engine for my IPdio mini Frontpanel that got converted into a DAB HiFi tuner with S/PDIF output only.
+
+
+## Changes:
+* Move Webstreamer to chunk audio instead of audio buffer, which is used for local audio output.
+* Stop stream after last client disconnect (6 second timeout, saves cpu).
+* Integration of external Station list, same as front panel station list. (see ipdio_bridge)
+* Separate Tune and Play Buttons in WebUI.
+* Make use of the two audio decoding instances to play a different station in web stream of the tuned ensemble.
+* DAB Announcement handling for cli mode disabled, otherwise it can cause issues with the dual playback.
+* A few more api things added for my needs, like dabtime, tii database and dl data for the second webstream.
+* Design adjustments of the WebUI
+
+    ## Only the CLI version was tested, no guarantee for Desktop version!
+
+
 The application is based on the Qt6 cross-platform software development framework and can run on any platform supported by Qt6 _(Qt version 6.7 or higher is required)_. 
 Prebuilt binaries are released for Windows, macOS (both Intel and Apple Silicon), Android (API 30, ARM64) and Linux x86-64 and AARCH64 (AppImage). The AARCH64 AppImage is built to run on Raspberry Pi 4/5 with a 64 bit OS.
 Arch Linux users can install AbracaDABra from the <a href="https://aur.archlinux.org/packages/abracadabra">AUR</a>.
 
+
 <p align="center" width="100%">
-    <img width="1023" height="740" alt="AbracaDABra" src="https://github.com/user-attachments/assets/42682583-54a5-4fe4-899c-27c2667a3100" />
+    <img width="1629" height="1545" alt="abra_advanced" src="https://github.com/user-attachments/assets/225e4c92-4f6f-4468-b521-8aa5a14f856b" />
 </p>
 
 
