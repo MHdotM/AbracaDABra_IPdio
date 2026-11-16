@@ -643,7 +643,12 @@ QString WebServer::indexHtml()
   .cardHead { display:flex; align-items:center; justify-content:space-between; gap:.5rem; margin-bottom:.65rem; }
   .cardHead h2 { font-size:1rem; margin:0; }
   .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(150px,1fr)); gap:.75rem; }
+  .statusGrid { grid-template-columns: repeat(auto-fit, minmax(110px,1fr)); }
   .stat.wide { grid-column: 1 / -1; }
+  .statSplit { grid-column: 1 / -1; display:flex; flex-wrap:wrap; gap:.75rem; align-items:flex-start; }
+  .statSender { flex: 0 1 180px; min-width:140px; }
+  .statTime { flex: 0 1 160px; min-width:130px; }
+  .statTitle { flex: 1 1 220px; min-width:180px; }
   .stat label { display:block; font-size:.72rem; color:#999; text-transform:uppercase; letter-spacing:.05em; }
   .stat span { font-size:1.05rem; word-break:break-word; }
   table { width:100%; border-collapse: collapse; }
@@ -717,15 +722,17 @@ QString WebServer::indexHtml()
 
     <div class="card statusRow">
       <img id="slide" alt="Station image">
-      <div class="grid" style="flex:1">
+      <div class="grid statusGrid" style="flex:1">
         <div class="stat"><label>Ensemble</label><span id="ensemble">-</span></div>
-        <div class="stat"><label>Channel</label><span id="channel">-</span></div>
-        <div class="stat"><label>Frequency</label><span id="freq">-</span></div>
+        <div class="stat"><label>Kanal</label><span id="channel">-</span></div>
+        <div class="stat"><label>Frequenz</label><span id="freq">-</span></div>
         <div class="stat"><label>Sync</label><span id="sync">-</span></div>
         <div class="stat"><label>SNR</label><span id="snr">-</span></div>
-        <div class="stat"><label>Now playing</label><span id="nowplaying">-</span></div>
-        <div class="stat"><label>DAB-Zeit</label><span id="dabTime">-</span></div>
-        <div class="stat"><label>Title (DL+)</label><span id="title">-</span></div>
+        <div class="stat wide statSplit">
+          <div class="stat statSender"><label>Sender</label><span id="nowplaying">-</span></div>
+          <div class="stat statTime"><label>DAB-Zeit</label><span id="dabTime">-</span></div>
+          <div class="stat statTitle"><label>Titel (DL+)</label><span id="title">-</span></div>
+        </div>
         <div class="stat wide"><label>Radiotext (DLS)</label><span id="dlsText">-</span></div>
         <div class="stat wide"><label>DL Plus info</label><span id="dlPlusTags">-</span></div>
       </div>
@@ -739,13 +746,13 @@ QString WebServer::indexHtml()
           <button id="syncStreamBtn" class="btnSm" onclick="syncToStream()">Auf S/PDIF übernehmen</button>
         </div>
         <div class="stat"><label>Webstream Sender</label><span id="streamLabel">-</span></div>
-        <div class="stat"><label>Webstream Title (DL+)</label><span id="streamTitle">-</span></div>
+        <div class="stat"><label>Webstream Titel (DL+)</label><span id="streamTitle">-</span></div>
         <div class="stat wide"><label>Webstream Radiotext (DLS)</label><span id="streamDls">-</span></div>
       </div>
     </div>
 
     <details class="card">
-      <summary>Advanced / technical info</summary>
+      <summary>Technische Informationen</summary>
       <div class="grid">
         <div class="stat"><label>Ensemble ID</label><span id="advEid">-</span></div>
         <div class="stat"><label>Service ID (SID)</label><span id="advSid">-</span></div>
