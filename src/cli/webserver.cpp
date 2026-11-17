@@ -343,6 +343,12 @@ void WebServer::handleRequest(QTcpSocket *socket, const QString &method, const Q
         return;
     }
 
+    if ("GET" == method && "/api/epg" == p)
+    {
+        sendJson(socket, QJsonDocument(m_app->epgJson()));
+        return;
+    }
+
     if ("POST" == method && "/api/tune" == p)
     {
         QJsonParseError perr;
@@ -690,6 +696,35 @@ QString WebServer::indexHtml()
   .cuChip { display:inline-flex; align-items:center; gap:.35rem; font-size:.75rem; background:#242424; border:1px solid #333; border-radius:5px; padding:.18rem .45rem; }
   .cuChip.active { border-color:#60a5fa; background:#1e293b; color:#fff; }
   .cuDot { width:9px; height:9px; border-radius:2px; flex-shrink:0; }
+  .layout.epgOpen .epgHide { display:none !important; }
+  #epgCard { display:none; flex-direction:column; gap:.75rem; min-width:0; }
+  .layout.epgOpen #epgCard { display:flex; }
+  .epgHead { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:.5rem; }
+  .epgDayBadge { font-size:.82rem; font-weight:600; color:#93c5fd; background:#1e3a8a55; border:1px solid #1e40af; padding:.22rem .6rem; border-radius:999px; }
+  #epgScroll { position:relative; overflow:auto; border:1px solid #2e2e2e; border-radius:6px; background:#151515; max-height:68vh; cursor:grab; user-select:none; }
+  #epgScroll.dragging { cursor:grabbing; }
+  .epgGrid { position:relative; width:max-content; min-width:100%; }
+  .epgHeaderRow { position:sticky; top:0; z-index:6; display:flex; background:#1e1e1e; border-bottom:1px solid #333; }
+  .epgCorner { position:sticky; left:0; z-index:8; width:155px; min-width:155px; padding:.45rem .55rem; background:#1e1e1e; border-right:1px solid #333; font-size:.78rem; font-weight:600; color:#9ca3af; }
+  .epgRuler { position:relative; width:8640px; height:32px; flex-shrink:0; }
+  .epgTick { position:absolute; top:0; bottom:0; border-left:1px solid #2f2f2f; padding:6px 0 0 5px; font-size:.74rem; color:#9ca3af; white-space:nowrap; }
+  .epgTick.midnight { border-left:2px solid #60a5fa; color:#93c5fd; font-weight:600; }
+  .epgNowDot { position:absolute; top:0; bottom:0; width:2px; background:#ef4444; z-index:2; pointer-events:none; }
+  .epgRow { display:flex; border-bottom:1px solid #242424; }
+  .epgRow.epgCurRow { background:#17255444; }
+  .epgSvc { position:sticky; left:0; z-index:4; width:155px; min-width:155px; padding:.5rem .55rem; background:#1a1a1a; border-right:1px solid #333; font-size:.84rem; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:flex; align-items:center; }
+  .epgRow.epgCurRow .epgSvc { background:#172554; color:#bfdbfe; font-weight:700; border-right-color:#2563eb; }
+  .epgTrack { position:relative; width:8640px; height:48px; flex-shrink:0; }
+  .epgProg { position:absolute; top:5px; bottom:5px; background:#262626; border:1px solid #3a3a3a; border-radius:5px; padding:3px 6px; overflow:hidden; cursor:pointer; display:flex; flex-direction:column; justify-content:center; }
+  .epgProg:hover { background:#323232; border-color:#525252; }
+  .epgProg.isNow { border-color:#2563eb; background:#1e3a8a55; }
+  .epgRow.epgCurRow .epgProg.isNow { border-color:#22c55e; background:#14532d88; }
+  .epgProg.selected { box-shadow:0 0 0 2px #93c5fd; }
+  .epgProgTitle { font-size:.8rem; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .epgProgTime { font-size:.69rem; color:#9ca3af; white-space:nowrap; }
+  .epgNowLine { position:absolute; top:32px; bottom:0; width:2px; background:#ef4444; z-index:5; pointer-events:none; }
+  #epgDetail { display:none; background:#161616; border:1px solid #333; border-radius:6px; padding:.7rem .85rem; font-size:.88rem; }
+  #epgDetail.visible { display:block; }
 </style>
 </head>
 <body>
@@ -698,7 +733,7 @@ QString WebServer::indexHtml()
   <span class="badge">S/PDIF 100% + Web-UI</span>
 </h1>
 
-<div class="layout">
+<div class="layout" id="mainLayout">
   <aside class="card sideList">
     <div class="cardHead">
       <h2>Senderliste <span id="stationCount" class="muted">(0)</span></h2>
@@ -717,10 +752,11 @@ QString WebServer::indexHtml()
         <select id="channelSelect"></select>
         <button onclick="tune()">Tune</button>
         <span id="tuneFeedback" class="muted"></span>
+        <button id="epgToggleBtn" style="margin-left:auto; display:none;" onclick="toggleEpgView()">EPG</button>
       </div>
     </div>
 
-    <div class="card statusRow">
+    <div class="card statusRow epgHide">
       <img id="slide" alt="Station image">
       <div class="grid statusGrid" style="flex:1">
         <div class="stat"><label>Ensemble</label><span id="ensemble">-</span></div>
@@ -738,7 +774,7 @@ QString WebServer::indexHtml()
       </div>
     </div>
 
-    <div id="streamCard" class="card statusRow" style="display:none; border-color:#2e7d32;">
+    <div id="streamCard" class="card statusRow epgHide" style="display:none; border-color:#2e7d32;">
       <img id="streamSlide" alt="Stream cover" style="width:96px; height:96px; object-fit:contain; border-radius:6px; background:#222; border:1px solid #333; display:none;">
       <div class="grid" style="flex:1">
         <div class="stat wide" style="display:flex; align-items:center; justify-content:space-between; gap:.5rem; flex-wrap:wrap;">
@@ -751,7 +787,7 @@ QString WebServer::indexHtml()
       </div>
     </div>
 
-    <details class="card">
+    <details class="card epgHide">
       <summary>Technische Informationen</summary>
       <div class="grid">
         <div class="stat"><label>Ensemble ID</label><span id="advEid">-</span></div>
@@ -781,9 +817,25 @@ QString WebServer::indexHtml()
         <div id="cuLegend" class="cuLegend"></div>
       </div>
     </details>
+    <div id="epgCard" class="card">
+      <div class="epgHead">
+        <div class="row">
+          <strong style="font-size:1rem;">Programmführer (EPG)</strong>
+          <span id="epgDayBadge" class="epgDayBadge">Heute</span>
+        </div>
+        <div class="btnGroup">
+          <button class="btnSm" onclick="scrollEpgTo('today')">Heute</button>
+          <button class="btnSm" onclick="scrollEpgTo('now')">Jetzt</button>
+          <button class="btnSm" onclick="scrollEpgTo('tomorrow')">Morgen</button>
+          <button class="btnSm" onclick="toggleEpgView(false)">Schließen</button>
+        </div>
+      </div>
+      <div id="epgScroll"></div>
+      <div id="epgDetail"></div>
+    </div>
   </div>
 
-  <div class="card ensembleCard">
+  <div class="card ensembleCard epgHide">
     <div class="cardHead">
       <h2>Aktuelles Ensemble</h2>
       <span id="ensembleBadge" class="muted"></span>
@@ -1648,6 +1700,19 @@ async function refresh(){
       }
     }
 
+    const epgBtn = document.getElementById('epgToggleBtn');
+    if (epgBtn) {
+      if (s && s.hasEpg) {
+        epgBtn.style.display = '';
+      } else {
+        epgBtn.style.display = 'none';
+        if (epgOpen) toggleEpgView(false);
+      }
+    }
+    if (epgOpen && Date.now() - epgLastFetch > 30000) {
+      loadEpg(false);
+    }
+
     renderServicesTable(s);
     if (!scanning && Date.now() - lastListRefresh > 6000) {
       lastListRefresh = Date.now();
@@ -1657,6 +1722,227 @@ async function refresh(){
     }
   } catch (e) { console.error(e); }
 }
+const EPG_PX_PER_MIN = 3;
+let epgOpen = false;
+let epgData = null;
+let epgLastFetch = 0;
+let epgDragged = false;
+let epgSelectedKey = '';
+
+function toggleEpgView(forceState) {
+  const layout = document.getElementById('mainLayout');
+  const btn = document.getElementById('epgToggleBtn');
+  epgOpen = (typeof forceState === 'boolean') ? forceState : !epgOpen;
+  if (epgOpen) {
+    layout.classList.add('epgOpen');
+    if (btn) { btn.textContent = 'Zurück'; btn.classList.add('tuned'); }
+    loadEpg(true);
+  } else {
+    layout.classList.remove('epgOpen');
+    if (btn) { btn.textContent = 'EPG'; btn.classList.remove('tuned'); }
+  }
+}
+
+async function loadEpg(autoScroll) {
+  try {
+    epgLastFetch = Date.now();
+    const r = await fetch('/api/epg');
+    const j = await r.json();
+    epgData = j;
+    renderEpg(j, autoScroll);
+  } catch (e) { console.error(e); }
+}
+
+function updateEpgDayBadge() {
+  const sc = document.getElementById('epgScroll');
+  const badge = document.getElementById('epgDayBadge');
+  if (!sc || !badge || !epgData) return;
+  const midnightX = 1440 * EPG_PX_PER_MIN;
+  const viewTrackW = Math.max(0, sc.clientWidth - 155);
+  const threshold = midnightX - viewTrackW * 0.35;
+  badge.textContent = (sc.scrollLeft >= threshold)
+    ? (epgData.tomorrowLabel || 'Morgen')
+    : (epgData.todayLabel || 'Heute');
+}
+
+function scrollEpgTo(target) {
+  const sc = document.getElementById('epgScroll');
+  if (!sc) return;
+  let x = 0;
+  if (target === 'tomorrow') {
+    x = 1440 * EPG_PX_PER_MIN;
+  } else if (target === 'now' && epgData && typeof epgData.nowMinute === 'number') {
+    x = Math.max(0, epgData.nowMinute * EPG_PX_PER_MIN - Math.max(100, (sc.clientWidth - 155) * 0.25));
+  }
+  sc.scrollTo({ left: x, behavior: 'smooth' });
+  setTimeout(updateEpgDayBadge, 180);
+}
+
+function showEpgDetail(svcLabel, prog) {
+  const box = document.getElementById('epgDetail');
+  if (!box) return;
+  box.innerHTML = '';
+  const head = document.createElement('div');
+  head.style.cssText = 'display:flex; justify-content:space-between; align-items:center; gap:.5rem; flex-wrap:wrap; margin-bottom:.35rem;';
+  const titleEl = document.createElement('strong');
+  titleEl.textContent = (svcLabel ? svcLabel + ' · ' : '') + (prog.title || '');
+  const timeEl = document.createElement('span');
+  timeEl.className = 'muted';
+  timeEl.textContent = (prog.dayLabel ? prog.dayLabel + ', ' : '') + prog.startStr + ' – ' + prog.endStr;
+  head.appendChild(titleEl);
+  head.appendChild(timeEl);
+  box.appendChild(head);
+  const descEl = document.createElement('div');
+  descEl.className = 'muted';
+  descEl.style.color = '#d1d5db';
+  descEl.textContent = prog.desc || 'Keine Beschreibung vorhanden.';
+  box.appendChild(descEl);
+  box.classList.add('visible');
+}
+
+function renderEpg(data, autoScroll) {
+  const sc = document.getElementById('epgScroll');
+  if (!sc) return;
+  const prevScrollLeft = sc.scrollLeft;
+  const prevScrollTop = sc.scrollTop;
+  sc.innerHTML = '';
+  if (!data || !data.available || !Array.isArray(data.services) || !data.services.length) {
+    sc.innerHTML = '<div class="muted" style="padding:1rem;">Aktuell keine EPG-Daten für heute oder morgen vorhanden.</div>';
+    return;
+  }
+
+  const grid = document.createElement('div');
+  grid.className = 'epgGrid';
+
+  const hdr = document.createElement('div');
+  hdr.className = 'epgHeaderRow';
+  const corner = document.createElement('div');
+  corner.className = 'epgCorner';
+  corner.textContent = 'Sender';
+  hdr.appendChild(corner);
+
+  const ruler = document.createElement('div');
+  ruler.className = 'epgRuler';
+  for (let h = 0; h < 48; h++) {
+    const tick = document.createElement('div');
+    tick.className = 'epgTick' + (h === 24 ? ' midnight' : '');
+    tick.style.left = (h * 60 * EPG_PX_PER_MIN) + 'px';
+    const hh = String(h % 24).padStart(2, '0') + ':00';
+    tick.textContent = (h === 24) ? ('00:00 · ' + (data.tomorrowShort || 'Morgen')) : hh;
+    ruler.appendChild(tick);
+  }
+  if (typeof data.nowMinute === 'number') {
+    const dot = document.createElement('div');
+    dot.className = 'epgNowDot';
+    dot.style.left = (data.nowMinute * EPG_PX_PER_MIN) + 'px';
+    ruler.appendChild(dot);
+  }
+  hdr.appendChild(ruler);
+  grid.appendChild(hdr);
+
+  let curRowEl = null;
+  data.services.forEach(svc => {
+    const row = document.createElement('div');
+    row.className = 'epgRow' + (svc.isCurrent ? ' epgCurRow' : '');
+    if (svc.isCurrent) curRowEl = row;
+
+    const svcCell = document.createElement('div');
+    svcCell.className = 'epgSvc';
+    svcCell.textContent = svc.label || svc.sid;
+    svcCell.title = svc.label || svc.sid;
+    row.appendChild(svcCell);
+
+    const track = document.createElement('div');
+    track.className = 'epgTrack';
+    (svc.programs || []).forEach(pr => {
+      const leftPx = pr.startMin * EPG_PX_PER_MIN;
+      const widthPx = Math.max(22, (pr.endMin - pr.startMin) * EPG_PX_PER_MIN - 2);
+      const pKey = svc.sid + ':' + pr.startMin;
+      const item = document.createElement('div');
+      item.className = 'epgProg' + (pr.isNow ? ' isNow' : '') + (pKey === epgSelectedKey ? ' selected' : '');
+      item.style.left = leftPx + 'px';
+      item.style.width = widthPx + 'px';
+      item.title = pr.startStr + '–' + pr.endStr + ' · ' + pr.title;
+
+      const tEl = document.createElement('div');
+      tEl.className = 'epgProgTitle';
+      tEl.textContent = pr.title;
+      const tmEl = document.createElement('div');
+      tmEl.className = 'epgProgTime';
+      tmEl.textContent = pr.startStr + '–' + pr.endStr;
+      item.appendChild(tEl);
+      item.appendChild(tmEl);
+
+      item.onclick = () => {
+        if (epgDragged) return;
+        epgSelectedKey = pKey;
+        sc.querySelectorAll('.epgProg.selected').forEach(el => el.classList.remove('selected'));
+        item.classList.add('selected');
+        showEpgDetail(svc.label || svc.sid, pr);
+      };
+      track.appendChild(item);
+    });
+    row.appendChild(track);
+    grid.appendChild(row);
+  });
+
+  if (typeof data.nowMinute === 'number') {
+    const nowLine = document.createElement('div');
+    nowLine.className = 'epgNowLine';
+    nowLine.style.left = (155 + data.nowMinute * EPG_PX_PER_MIN) + 'px';
+    grid.appendChild(nowLine);
+  }
+
+  sc.appendChild(grid);
+
+  if (autoScroll) {
+    const targetX = (typeof data.nowMinute === 'number')
+      ? Math.max(0, data.nowMinute * EPG_PX_PER_MIN - Math.max(100, (sc.clientWidth - 155) * 0.25))
+      : 0;
+    sc.scrollLeft = targetX;
+    if (curRowEl) {
+      sc.scrollTop = Math.max(0, curRowEl.offsetTop - sc.clientHeight * 0.35);
+    }
+  } else {
+    sc.scrollLeft = prevScrollLeft;
+    sc.scrollTop = prevScrollTop;
+  }
+  updateEpgDayBadge();
+}
+
+(function initEpgScrollHandlers(){
+  const sc = document.getElementById('epgScroll');
+  if (!sc) return;
+  let down = false, startX = 0, startLeft = 0;
+  sc.addEventListener('scroll', updateEpgDayBadge, { passive: true });
+  sc.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    down = true;
+    epgDragged = false;
+    startX = e.clientX;
+    startLeft = sc.scrollLeft;
+    sc.classList.add('dragging');
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (!down) return;
+    const dx = e.clientX - startX;
+    if (Math.abs(dx) > 5) epgDragged = true;
+    if (epgDragged) sc.scrollLeft = startLeft - dx;
+  });
+  window.addEventListener('mouseup', () => {
+    if (!down) return;
+    down = false;
+    sc.classList.remove('dragging');
+    setTimeout(() => { epgDragged = false; }, 0);
+  });
+  sc.addEventListener('wheel', (e) => {
+    if (sc.scrollHeight <= sc.clientHeight && Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+      e.preventDefault();
+      sc.scrollLeft += e.deltaY;
+    }
+  }, { passive: false });
+})();
+
 loadChannels().then(refresh);
 loadStationList();
 setInterval(refresh, 1500);

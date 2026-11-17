@@ -29,12 +29,19 @@
 
 #include <QDateTime>
 #include <QDir>
+#include <QDomDocument>
 #include <QFileInfo>
 #include <QHostAddress>
 #include <QList>
 #include <QMultiHash>
+#include <QSaveFile>
+#include <QSet>
+#include <QStandardPaths>
 #include <QStringList>
+#include <QTimeZone>
+#include <QTimer>
 #include "servicelistid.h"
+#include "spiapp.h"
 #include "txdataitem.h"
 #include "txdataloader.h"
 #include <QJsonArray>
@@ -117,6 +124,14 @@ struct CliServiceInfo
     bool isAudio = false;
 };
 
+struct CliEpgProgram
+{
+    qint64 startUtc = 0;
+    int durationSec = 0;
+    QString title;
+    QString desc;
+};
+
 class DabCliApp : public QObject
 {
     Q_OBJECT
@@ -139,6 +154,7 @@ public:
     bool isStreamDecoupled() const;
     bool currentStreamSlide(QByteArray *data, QString *contentType) const;
     bool requestTiiDbUpdate(QString *errorOut);
+    QJsonObject epgJson() const;
 
     // percent in [0, 100]; no-op if local audio output (HAVE_PORTAUDIO / TUI mode) isn't active
     void setVolume(int percent);
@@ -177,6 +193,8 @@ private slots:
     void onServiceListComplete(const RadioControlEnsemble &ens);
     void onSignalState(uint8_t sync, float snr);
     void onDabTime(const QDateTime &d);
+    void onSpiXmlDocument(const QString &xmldocument, const QString &scopeId, uint16_t decoderId);
+    void onEpgFlushTimer();
     void onDlItemToggle();
     void onDlItemRunning(bool isRunning);
     void onTiiData(const RadioControlTIIData &data);
@@ -245,6 +263,23 @@ private:
     bool m_haveAudioParams = false;
     bool m_dlItemRunning = true;
     QDateTime m_dabTime;
+    SPIApp *m_spiApp = nullptr;
+    QTimer *m_epgFlushTimer = nullptr;
+    QHash<quint64, QList<CliEpgProgram>> m_epgPrograms;
+    QHash<quint64, QString> m_epgServiceLabels;
+    QSet<QString> m_epgRadioDnsQueried;
+    bool m_epgCacheDirty = false;
+    bool m_epgHasDiskCache = false;
+    QDateTime m_epgLastDiskWrite;
+    QString epgCachePath() const;
+    void loadEpgCache();
+    void saveEpgCache(bool force = false);
+    void scheduleEpgFlushLocked();
+    void pruneOldEpgLocked();
+    bool parseEpgXmlLocked(const QString &xmldocument, const QString &scopeId);
+    bool parseEpgProgrammeLocked(const QDomElement &element, uint32_t sid, uint8_t scids, const QDate &today, const QDate &tomorrow);
+    void requestRadioDnsForEnsembleLocked();
+    bool hasValidEpgLocked(QDate *todayOut = nullptr, int *nowMinOut = nullptr) const;
     QList<dabsdrTii_t> m_tiiList;
     QMultiHash<ServiceListId, TxDataItem *> m_txTable;
     QDateTime m_txDbLastUpdate;

@@ -186,6 +186,7 @@ DabCliApp::~DabCliApp()
         m_streamAudioDecoderThread->quit();
         m_streamAudioDecoderThread->wait();
     }
+    saveEpgCache(true);
     if (nullptr != m_inputDevice)
     {
         delete m_inputDevice;
@@ -362,6 +363,27 @@ bool DabCliApp::start()
     connect(m_radioControl, &RadioControl::decodingStats, this, &DabCliApp::onDecodingStats, Qt::QueuedConnection);
 
     connect(this, &DabCliApp::tuneServiceRequested, m_radioControl, &RadioControl::tuneService, Qt::QueuedConnection);
+
+    m_epgFlushTimer = new QTimer(this);
+    m_epgFlushTimer->setSingleShot(true);
+    connect(m_epgFlushTimer, &QTimer::timeout, this, &DabCliApp::onEpgFlushTimer);
+    loadEpgCache();
+
+    m_spiApp = new SPIApp();
+    m_spiApp->moveToThread(m_radioControlThread);
+    connect(m_radioControlThread, &QThread::finished, m_spiApp, &QObject::deleteLater);
+    connect(m_radioControl, &RadioControl::userAppData_Service, m_spiApp, &SPIApp::onUserAppData);
+    connect(m_radioControl, &RadioControl::audioServiceSelection, m_spiApp, &SPIApp::start);
+    connect(m_radioControl, &RadioControl::ensembleInformation, m_spiApp, &UserApplication::setEnsId);
+    connect(m_radioControl, &RadioControl::audioServiceSelection, m_spiApp, &UserApplication::setAudioServiceId);
+    connect(m_spiApp, &SPIApp::xmlDocument, this, &DabCliApp::onSpiXmlDocument, Qt::QueuedConnection);
+    QMetaObject::invokeMethod(m_spiApp, [spi = m_spiApp]() {
+        spi->onSettingsChanged(true, true);
+        spi->enable(true);
+    }, Qt::QueuedConnection);
+    QMetaObject::invokeMethod(m_radioControl, [rc = m_radioControl]() {
+        rc->onSpiApplicationEnabled(true);
+    }, Qt::QueuedConnection);
 
     TxDataLoader::loadTable(m_txTable);
     m_txDbLastUpdate = TxDataLoader::lastUpdateTime();
@@ -706,6 +728,10 @@ void DabCliApp::onServiceListEntry(const RadioControlEnsemble &ens, const RadioC
         info.codec = QStringLiteral("AAC+");
     else if (s.streamAudioData.scType == DabAudioDataSCty::DAB_AUDIO)
         info.codec = QStringLiteral("MP2");
+    if (info.isAudio && !info.label.isEmpty())
+    {
+        m_epgServiceLabels.insert(key(info.sid, info.scids), info.label);
+    }
     m_services.insert(key(info.sid, info.scids), info);
 }
 
@@ -720,6 +746,10 @@ void DabCliApp::onServiceListComplete(const RadioControlEnsemble &ens)
     qCInfo(cliApp) << "Service list complete:" << numServices << "service component(s)";
 
     resolvePendingServiceLabel();
+    {
+        QMutexLocker lock(&m_mutex);
+        requestRadioDnsForEnsembleLocked();
+    }
 }
 
 void DabCliApp::onSignalState(uint8_t sync, float snr)
@@ -731,6 +761,10 @@ void DabCliApp::onSignalState(uint8_t sync, float snr)
 
 void DabCliApp::onTuneDone(uint32_t freq)
 {
+    if (nullptr != m_spiApp)
+    {
+        QMetaObject::invokeMethod(m_spiApp, [spi = m_spiApp, freq]() { if (0 != freq) spi->enable(true); else spi->stop(); }, Qt::QueuedConnection);
+    }
     if (m_shutdownRequested && (0 == freq))
     {
         emit readyToQuit();
@@ -744,6 +778,7 @@ void DabCliApp::requestShutdown()
         return;
     }
     m_shutdownRequested = true;
+    saveEpgCache(true);
 
     uint32_t freq;
     {
@@ -867,6 +902,61 @@ void DabCliApp::onRfLevel(float level, float gain)
     m_haveRfLevel = true;
 }
 
+static int cliParseIsoDurationSec(const QString &dur)
+{
+    if (!dur.startsWith(QLatin1String("PT"))) return 0;
+    int total = 0;
+    int val = 0;
+    for (int i = 2; i < dur.size(); ++i)
+    {
+        QChar c = dur.at(i);
+        if (c.isDigit())
+        {
+            val = val * 10 + c.digitValue();
+        }
+        else if (c == QLatin1Char('H'))
+        {
+            total += val * 3600;
+            val = 0;
+        }
+        else if (c == QLatin1Char('M'))
+        {
+            total += val * 60;
+            val = 0;
+        }
+        else if (c == QLatin1Char('S'))
+        {
+            total += val;
+            val = 0;
+        }
+    }
+    return total;
+}
+
+static QTimeZone cliDabTz(const QDateTime &dabTime)
+{
+    return dabTime.isValid() ? QTimeZone::fromSecondsAheadOfUtc(dabTime.offsetFromUtc()) : QTimeZone::systemTimeZone();
+}
+
+static bool cliParseDabBearerUri(const QString &uri, uint32_t *sidOut, uint8_t *scidsOut)
+{
+    if (!uri.startsWith(QLatin1String("dab:"), Qt::CaseInsensitive)) return false;
+    QStringList parts = uri.mid(4).split(QLatin1Char('.'));
+    if (parts.size() < 4 || parts.at(0).size() != 3) return false;
+    bool okSid = false;
+    bool okScids = false;
+    uint32_t sid = 0;
+    if (parts.at(2).size() == 8)
+        sid = parts.at(2).toUInt(&okSid, 16);
+    else
+        sid = (parts.at(0).mid(1) + parts.at(2)).toUInt(&okSid, 16);
+    uint8_t scids = uint8_t(parts.at(3).toUInt(&okScids, 10));
+    if (!okSid || !okScids || 0 == sid) return false;
+    if (sidOut) *sidOut = sid;
+    if (scidsOut) *scidsOut = scids;
+    return true;
+}
+
 void DabCliApp::onAudioParametersInfo(const AudioParameters &params)
 {
     QMutexLocker lock(&m_mutex);
@@ -877,7 +967,555 @@ void DabCliApp::onAudioParametersInfo(const AudioParameters &params)
 void DabCliApp::onDabTime(const QDateTime &d)
 {
     QMutexLocker lock(&m_mutex);
+    bool wasInvalid = !m_dabTime.isValid();
+    QDate prevDate = wasInvalid ? QDate() : m_dabTime.date();
     m_dabTime = d;
+    QDate newDate = d.isValid() ? d.date() : QDate();
+    if (d.isValid() && (wasInvalid || prevDate != newDate))
+    {
+        pruneOldEpgLocked();
+        requestRadioDnsForEnsembleLocked();
+    }
+}
+
+QString DabCliApp::epgCachePath() const
+{
+    QString dir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    if (dir.isEmpty()) dir = QStringLiteral("/tmp/AbracaDABra");
+    return dir + QStringLiteral("/cli_epg_cache.json");
+}
+
+void DabCliApp::loadEpgCache()
+{
+    QFile f(epgCachePath());
+    if (!f.open(QIODevice::ReadOnly))
+    {
+        m_epgHasDiskCache = false;
+        return;
+    }
+    QJsonParseError err;
+    QJsonDocument doc = QJsonDocument::fromJson(f.readAll(), &err);
+    f.close();
+    if (QJsonParseError::NoError != err.error || !doc.isObject())
+    {
+        m_epgHasDiskCache = false;
+        return;
+    }
+    QMutexLocker lock(&m_mutex);
+    QJsonObject root = doc.object();
+    QDate today = QDate::currentDate();
+    qint64 minEndUtc = today.startOfDay().toSecsSinceEpoch();
+    qint64 maxStartUtc = today.addDays(2).startOfDay().toSecsSinceEpoch();
+    int validCount = 0;
+
+    QJsonObject labelsObj = root.value(QStringLiteral("labels")).toObject();
+    for (auto it = labelsObj.constBegin(); it != labelsObj.constEnd(); ++it)
+    {
+        bool ok = false;
+        quint64 k = it.key().toULongLong(&ok);
+        if (ok && !it.value().toString().isEmpty())
+        {
+            m_epgServiceLabels.insert(k, it.value().toString());
+        }
+    }
+
+    QJsonObject svcsObj = root.value(QStringLiteral("services")).toObject();
+    for (auto it = svcsObj.constBegin(); it != svcsObj.constEnd(); ++it)
+    {
+        bool ok = false;
+        quint64 k = it.key().toULongLong(&ok);
+        if (!ok) continue;
+        QList<CliEpgProgram> list;
+        QJsonArray arr = it.value().toArray();
+        for (const QJsonValue &v : arr)
+        {
+            QJsonObject po = v.toObject();
+            CliEpgProgram pr;
+            pr.startUtc = qint64(po.value(QStringLiteral("s")).toDouble(0));
+            pr.durationSec = po.value(QStringLiteral("d")).toInt(0);
+            pr.title = po.value(QStringLiteral("t")).toString();
+            pr.desc = po.value(QStringLiteral("x")).toString();
+            if (pr.startUtc <= 0 || pr.durationSec <= 0 || pr.title.isEmpty()) continue;
+            if ((pr.startUtc + pr.durationSec) <= minEndUtc || pr.startUtc >= maxStartUtc) continue;
+            list.append(pr);
+            ++validCount;
+        }
+        if (!list.isEmpty())
+        {
+            std::sort(list.begin(), list.end(), [](const CliEpgProgram &a, const CliEpgProgram &b) {
+                return a.startUtc < b.startUtc;
+            });
+            m_epgPrograms.insert(k, list);
+        }
+    }
+    m_epgHasDiskCache = (validCount > 0);
+    if (m_epgHasDiskCache)
+    {
+        m_epgLastDiskWrite = QFileInfo(epgCachePath()).lastModified().toUTC();
+        qCInfo(cliApp) << "EPG cache loaded:" << validCount << "programme(s)";
+    }
+}
+
+void DabCliApp::saveEpgCache(bool force)
+{
+    QJsonObject root;
+    {
+        QMutexLocker lock(&m_mutex);
+        if (!m_epgCacheDirty) return;
+        Q_UNUSED(force);
+        pruneOldEpgLocked();
+        QJsonObject labelsObj;
+        QJsonObject svcsObj;
+        for (auto it = m_epgPrograms.cbegin(); it != m_epgPrograms.cend(); ++it)
+        {
+            if (it.value().isEmpty()) continue;
+            QString kStr = QString::number(it.key());
+            QString lbl = m_epgServiceLabels.value(it.key());
+            if (!lbl.isEmpty()) labelsObj.insert(kStr, lbl);
+            QJsonArray arr;
+            for (const CliEpgProgram &pr : it.value())
+            {
+                QJsonObject po;
+                po.insert(QStringLiteral("s"), double(pr.startUtc));
+                po.insert(QStringLiteral("d"), pr.durationSec);
+                po.insert(QStringLiteral("t"), pr.title);
+                if (!pr.desc.isEmpty()) po.insert(QStringLiteral("x"), pr.desc);
+                arr.append(po);
+            }
+            svcsObj.insert(kStr, arr);
+        }
+        root.insert(QStringLiteral("labels"), labelsObj);
+        root.insert(QStringLiteral("services"), svcsObj);
+        m_epgCacheDirty = false;
+        m_epgHasDiskCache = !svcsObj.isEmpty();
+        m_epgLastDiskWrite = QDateTime::currentDateTimeUtc();
+    }
+
+    QString path = epgCachePath();
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QSaveFile sf(path);
+    if (sf.open(QIODevice::WriteOnly))
+    {
+        sf.write(QJsonDocument(root).toJson(QJsonDocument::Compact));
+        if (sf.commit())
+        {
+            qCInfo(cliApp) << "EPG cache saved to" << path;
+        }
+    }
+}
+
+void DabCliApp::scheduleEpgFlushLocked()
+{
+    if ((nullptr == m_epgFlushTimer) || !m_epgCacheDirty) return;
+    if (m_epgFlushTimer->isActive()) return;
+    int delayMs = 60 * 60 * 1000;
+    if (!m_epgHasDiskCache)
+    {
+        delayMs = 10 * 60 * 1000;
+    }
+    else if (m_epgLastDiskWrite.isValid())
+    {
+        qint64 elapsed = m_epgLastDiskWrite.msecsTo(QDateTime::currentDateTimeUtc());
+        delayMs = int(qMax<qint64>(1000, qint64(60 * 60 * 1000) - elapsed));
+    }
+    m_epgFlushTimer->start(delayMs);
+}
+
+void DabCliApp::onEpgFlushTimer()
+{
+    saveEpgCache(false);
+}
+
+void DabCliApp::pruneOldEpgLocked()
+{
+    QTimeZone tz = cliDabTz(m_dabTime);
+    QDate today = m_dabTime.isValid() ? m_dabTime.date() : QDate::currentDate();
+    qint64 minEndUtc = QDateTime(today, QTime(0, 0), tz).toSecsSinceEpoch();
+    qint64 maxStartUtc = QDateTime(today.addDays(2), QTime(0, 0), tz).toSecsSinceEpoch();
+    for (auto it = m_epgPrograms.begin(); it != m_epgPrograms.end(); )
+    {
+        QList<CliEpgProgram> &list = it.value();
+        for (int i = list.size() - 1; i >= 0; --i)
+        {
+            const CliEpgProgram &pr = list.at(i);
+            if ((pr.startUtc + pr.durationSec) <= minEndUtc || pr.startUtc >= maxStartUtc)
+            {
+                list.removeAt(i);
+            }
+        }
+        if (list.isEmpty())
+            it = m_epgPrograms.erase(it);
+        else
+            ++it;
+    }
+}
+
+void DabCliApp::onSpiXmlDocument(const QString &xmldocument, const QString &scopeId, uint16_t decoderId)
+{
+    Q_UNUSED(decoderId);
+    QMutexLocker lock(&m_mutex);
+    if (parseEpgXmlLocked(xmldocument, scopeId))
+    {
+        m_epgCacheDirty = true;
+        scheduleEpgFlushLocked();
+    }
+}
+
+bool DabCliApp::parseEpgXmlLocked(const QString &xmldocument, const QString &scopeId)
+{
+    QDomDocument doc;
+    if (!doc.setContent(xmldocument)) return false;
+    QDomElement root = doc.documentElement();
+    QDate today = m_dabTime.isValid() ? m_dabTime.date() : QDate::currentDate();
+    QDate tomorrow = today.addDays(1);
+    bool changed = false;
+
+    if (QLatin1String("serviceInformation") == root.tagName())
+    {
+        QDomElement svcsEl = root.firstChildElement(QStringLiteral("services"));
+        QDomElement svcEl = svcsEl.firstChildElement(QStringLiteral("service"));
+        while (!svcEl.isNull())
+        {
+            QString label;
+            QDomElement c = svcEl.firstChildElement();
+            while (!c.isNull())
+            {
+                if (QLatin1String("longName") == c.tagName() && !c.text().isEmpty())
+                    label = c.text();
+                else if (QLatin1String("mediumName") == c.tagName() && label.isEmpty() && !c.text().isEmpty())
+                    label = c.text();
+                else if (QLatin1String("shortName") == c.tagName() && label.isEmpty() && !c.text().isEmpty())
+                    label = c.text();
+                c = c.nextSiblingElement();
+            }
+            if (!label.isEmpty())
+            {
+                QDomElement bearerEl = svcEl.firstChildElement(QStringLiteral("bearer"));
+                while (!bearerEl.isNull())
+                {
+                    uint32_t sid = 0;
+                    uint8_t scids = 0;
+                    if (cliParseDabBearerUri(bearerEl.attribute(QStringLiteral("id")), &sid, &scids))
+                    {
+                        quint64 k = key(sid, scids);
+                        if (!m_epgServiceLabels.contains(k))
+                        {
+                            m_epgServiceLabels.insert(k, label);
+                        }
+                    }
+                    bearerEl = bearerEl.nextSiblingElement(QStringLiteral("bearer"));
+                }
+            }
+            svcEl = svcEl.nextSiblingElement(QStringLiteral("service"));
+        }
+        return false;
+    }
+
+    if (QLatin1String("epg") != root.tagName()) return false;
+
+    QDomElement schedEl = root.firstChildElement(QStringLiteral("schedule"));
+    while (!schedEl.isNull())
+    {
+        uint32_t sid = 0;
+        uint8_t scids = 0;
+        bool haveSid = false;
+        QDomElement scopeEl = schedEl.firstChildElement(QStringLiteral("scope"));
+        if (!scopeEl.isNull())
+        {
+            QDomElement ssEl = scopeEl.firstChildElement(QStringLiteral("serviceScope"));
+            while (!ssEl.isNull())
+            {
+                if (cliParseDabBearerUri(ssEl.attribute(QStringLiteral("id")), &sid, &scids))
+                {
+                    haveSid = true;
+                    break;
+                }
+                ssEl = ssEl.nextSiblingElement(QStringLiteral("serviceScope"));
+            }
+        }
+        if (!haveSid && !scopeId.isEmpty())
+        {
+            haveSid = cliParseDabBearerUri(scopeId, &sid, &scids);
+        }
+        if (haveSid)
+        {
+            QDomElement progEl = schedEl.firstChildElement(QStringLiteral("programme"));
+            while (!progEl.isNull())
+            {
+                if (parseEpgProgrammeLocked(progEl, sid, scids, today, tomorrow))
+                {
+                    changed = true;
+                }
+                progEl = progEl.nextSiblingElement(QStringLiteral("programme"));
+            }
+        }
+        schedEl = schedEl.nextSiblingElement(QStringLiteral("schedule"));
+    }
+    return changed;
+}
+
+bool DabCliApp::parseEpgProgrammeLocked(const QDomElement &element, uint32_t sid, uint8_t scids, const QDate &today, const QDate &tomorrow)
+{
+    QString longName, medName, shortName;
+    QString longDesc, shortDesc;
+    QDomElement child = element.firstChildElement();
+    while (!child.isNull())
+    {
+        const QString tag = child.tagName();
+        if (QLatin1String("longName") == tag) longName = child.text().trimmed();
+        else if (QLatin1String("mediumName") == tag) medName = child.text().trimmed();
+        else if (QLatin1String("shortName") == tag) shortName = child.text().trimmed();
+        else if (QLatin1String("mediaDescription") == tag)
+        {
+            QDomElement dc = child.firstChildElement();
+            while (!dc.isNull())
+            {
+                if (QLatin1String("longDescription") == dc.tagName() && longDesc.isEmpty())
+                    longDesc = dc.text().trimmed();
+                else if (QLatin1String("shortDescription") == dc.tagName() && shortDesc.isEmpty())
+                    shortDesc = dc.text().trimmed();
+                dc = dc.nextSiblingElement();
+            }
+        }
+        child = child.nextSiblingElement();
+    }
+
+    QString title = !longName.isEmpty() ? longName : (!medName.isEmpty() ? medName : shortName);
+    if (title.isEmpty()) return false;
+    QString desc = !longDesc.isEmpty() ? longDesc : shortDesc;
+
+    QTimeZone tz = cliDabTz(m_dabTime);
+    qint64 minEndUtc = QDateTime(today, QTime(0, 0), tz).toSecsSinceEpoch();
+    qint64 maxStartUtc = QDateTime(tomorrow.addDays(1), QTime(0, 0), tz).toSecsSinceEpoch();
+    quint64 k = key(sid, scids);
+    bool changed = false;
+
+    QDomElement locEl = element.firstChildElement(QStringLiteral("location"));
+    while (!locEl.isNull())
+    {
+        QDomElement timeEl = locEl.firstChildElement(QStringLiteral("time"));
+        while (!timeEl.isNull())
+        {
+            QDateTime st = QDateTime::fromString(timeEl.attribute(QStringLiteral("time")), Qt::ISODate);
+            int dur = cliParseIsoDurationSec(timeEl.attribute(QStringLiteral("duration")));
+            if (st.isValid() && dur > 0)
+            {
+                qint64 stUtc = st.toUTC().toSecsSinceEpoch();
+                if ((stUtc + dur) > minEndUtc && stUtc < maxStartUtc)
+                {
+                    QList<CliEpgProgram> &list = m_epgPrograms[k];
+                    bool found = false;
+                    for (CliEpgProgram &ex : list)
+                    {
+                        if (ex.startUtc == stUtc)
+                        {
+                            found = true;
+                            if (ex.durationSec != dur || ex.title != title || ex.desc != desc)
+                            {
+                                ex.durationSec = dur;
+                                ex.title = title;
+                                ex.desc = desc;
+                                changed = true;
+                            }
+                            break;
+                        }
+                    }
+                    if (!found)
+                    {
+                        CliEpgProgram np;
+                        np.startUtc = stUtc;
+                        np.durationSec = dur;
+                        np.title = title;
+                        np.desc = desc;
+                        list.append(np);
+                        std::sort(list.begin(), list.end(), [](const CliEpgProgram &a, const CliEpgProgram &b) {
+                            return a.startUtc < b.startUtc;
+                        });
+                        changed = true;
+                    }
+                }
+            }
+            timeEl = timeEl.nextSiblingElement(QStringLiteral("time"));
+        }
+        locEl = locEl.nextSiblingElement(QStringLiteral("location"));
+    }
+    return changed;
+}
+
+void DabCliApp::requestRadioDnsForEnsembleLocked()
+{
+    if ((nullptr == m_spiApp) || !m_dabTime.isValid() || !m_ensemble.isValid() || m_services.isEmpty()) return;
+    QTimeZone tz = cliDabTz(m_dabTime);
+    QDate today = m_dabTime.date();
+    QList<uint32_t> ueids{m_ensemble.ueid};
+
+    for (auto it = m_services.cbegin(); it != m_services.cend(); ++it)
+    {
+        if (!it->isAudio) continue;
+        ServiceListId servId(it->sid, it->scids);
+        quint64 k = key(it->sid, it->scids);
+        for (int dayOff = 0; dayOff <= 1; ++dayOff)
+        {
+            QDate d = today.addDays(dayOff);
+            QString qKey = QString("%1:%2:%3:%4")
+                               .arg(m_ensemble.ueid, 0, 16)
+                               .arg(it->sid, 0, 16)
+                               .arg(it->scids)
+                               .arg(d.toString(QStringLiteral("yyyyMMdd")));
+            if (m_epgRadioDnsQueried.contains(qKey)) continue;
+            m_epgRadioDnsQueried.insert(qKey);
+
+            bool alreadyHaveDay = false;
+            qint64 ds = QDateTime(d, QTime(0, 0), tz).toSecsSinceEpoch();
+            qint64 de = QDateTime(d.addDays(1), QTime(0, 0), tz).toSecsSinceEpoch();
+            const QList<CliEpgProgram> list = m_epgPrograms.value(k);
+            for (const CliEpgProgram &pr : list)
+            {
+                if (pr.startUtc >= ds && pr.startUtc < de)
+                {
+                    alreadyHaveDay = true;
+                    break;
+                }
+            }
+            if (alreadyHaveDay) continue;
+
+            QMetaObject::invokeMethod(m_spiApp, [spi = m_spiApp, servId, ueids, d]() {
+                spi->getPI(servId, ueids, d);
+            }, Qt::QueuedConnection);
+        }
+    }
+}
+
+bool DabCliApp::hasValidEpgLocked(QDate *todayOut, int *nowMinOut) const
+{
+    if (!m_dabTime.isValid() || m_epgPrograms.isEmpty()) return false;
+    QTimeZone tz = cliDabTz(m_dabTime);
+    QDate today = m_dabTime.date();
+    QDateTime dayStart(today, QTime(0, 0), tz);
+    qint64 minEndUtc = dayStart.toSecsSinceEpoch();
+    qint64 maxStartUtc = QDateTime(today.addDays(2), QTime(0, 0), tz).toSecsSinceEpoch();
+    if (todayOut) *todayOut = today;
+    if (nowMinOut) *nowMinOut = qBound(0, int(dayStart.secsTo(m_dabTime) / 60), 1439);
+
+    for (auto it = m_epgPrograms.cbegin(); it != m_epgPrograms.cend(); ++it)
+    {
+        for (const CliEpgProgram &pr : it.value())
+        {
+            if ((pr.startUtc + pr.durationSec) > minEndUtc && pr.startUtc < maxStartUtc)
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+QJsonObject DabCliApp::epgJson() const
+{
+    QMutexLocker lock(&m_mutex);
+    QJsonObject root;
+    QDate today;
+    int nowMin = 0;
+    if (!hasValidEpgLocked(&today, &nowMin))
+    {
+        root[QStringLiteral("available")] = false;
+        root[QStringLiteral("services")] = QJsonArray();
+        return root;
+    }
+
+    QTimeZone tz = cliDabTz(m_dabTime);
+    QDate tomorrow = today.addDays(1);
+    QDateTime dayStart(today, QTime(0, 0), tz);
+    qint64 dayStartUtc = dayStart.toSecsSinceEpoch();
+    qint64 windowEndUtc = QDateTime(today.addDays(2), QTime(0, 0), tz).toSecsSinceEpoch();
+
+    root[QStringLiteral("available")] = true;
+    root[QStringLiteral("dabTimeIso")] = m_dabTime.toString(Qt::ISODate);
+    root[QStringLiteral("today")] = today.toString(Qt::ISODate);
+    root[QStringLiteral("todayLabel")] = QString("Heute · %1").arg(today.toString(QStringLiteral("dd.MM.")));
+    root[QStringLiteral("tomorrow")] = tomorrow.toString(Qt::ISODate);
+    root[QStringLiteral("tomorrowLabel")] = QString("Morgen · %1").arg(tomorrow.toString(QStringLiteral("dd.MM.")));
+    root[QStringLiteral("tomorrowShort")] = tomorrow.toString(QStringLiteral("dd.MM."));
+    root[QStringLiteral("nowMinute")] = nowMin;
+    root[QStringLiteral("totalMinutes")] = 2880;
+
+    struct SvcEntry {
+        quint64 k;
+        uint32_t sid;
+        uint8_t scids;
+        QString label;
+        bool isCurrent;
+        QJsonArray progs;
+    };
+    QList<SvcEntry> entries;
+
+    for (auto it = m_epgPrograms.cbegin(); it != m_epgPrograms.cend(); ++it)
+    {
+        QJsonArray progsArr;
+        for (const CliEpgProgram &pr : it.value())
+        {
+            qint64 pEndUtc = pr.startUtc + pr.durationSec;
+            if (pEndUtc <= dayStartUtc || pr.startUtc >= windowEndUtc) continue;
+            int startMin = qBound(0, int((pr.startUtc - dayStartUtc) / 60), 2880);
+            int endMin = qBound(0, int((pEndUtc - dayStartUtc) / 60), 2880);
+            if (endMin <= startMin) continue;
+
+            QDateTime stLocal = QDateTime::fromSecsSinceEpoch(pr.startUtc, tz);
+            QDateTime enLocal = QDateTime::fromSecsSinceEpoch(pEndUtc, tz);
+            QJsonObject po;
+            po[QStringLiteral("startMin")] = startMin;
+            po[QStringLiteral("endMin")] = endMin;
+            po[QStringLiteral("startStr")] = stLocal.toString(QStringLiteral("HH:mm"));
+            po[QStringLiteral("endStr")] = enLocal.toString(QStringLiteral("HH:mm"));
+            po[QStringLiteral("dayLabel")] = (stLocal.date() == tomorrow)
+                                                 ? QStringLiteral("Morgen")
+                                                 : (stLocal.date() == today ? QStringLiteral("Heute") : stLocal.date().toString(QStringLiteral("dd.MM.")));
+            po[QStringLiteral("title")] = pr.title;
+            po[QStringLiteral("desc")] = pr.desc;
+            po[QStringLiteral("isNow")] = (nowMin >= startMin && nowMin < endMin);
+            progsArr.append(po);
+        }
+        if (progsArr.isEmpty()) continue;
+
+        quint64 k = it.key();
+        uint32_t sid = uint32_t(k >> 8);
+        uint8_t scids = uint8_t(k & 0xFFu);
+        QString label;
+        if (m_services.contains(k) && !m_services.value(k).label.isEmpty())
+            label = m_services.value(k).label;
+        else if (m_epgServiceLabels.contains(k))
+            label = m_epgServiceLabels.value(k);
+        else
+            label = QString("0x%1").arg(sid, 0, 16).toUpper();
+
+        SvcEntry e;
+        e.k = k;
+        e.sid = sid;
+        e.scids = scids;
+        e.label = label;
+        e.isCurrent = (sid == m_currentSid && scids == m_currentScids && m_isPlaying);
+        e.progs = progsArr;
+        entries.append(e);
+    }
+
+    std::sort(entries.begin(), entries.end(), [](const SvcEntry &a, const SvcEntry &b) {
+        if (a.isCurrent != b.isCurrent) return a.isCurrent;
+        return a.label.compare(b.label, Qt::CaseInsensitive) < 0;
+    });
+
+    QJsonArray svcsArr;
+    for (const SvcEntry &e : entries)
+    {
+        QJsonObject so;
+        so[QStringLiteral("sid")] = QString("0x%1").arg(e.sid, 0, 16);
+        so[QStringLiteral("scids")] = e.scids;
+        so[QStringLiteral("label")] = e.label;
+        so[QStringLiteral("isCurrent")] = e.isCurrent;
+        so[QStringLiteral("programs")] = e.progs;
+        svcsArr.append(so);
+    }
+    root[QStringLiteral("services")] = svcsArr;
+    return root;
 }
 
 void DabCliApp::onDlItemToggle()
@@ -1337,6 +1975,7 @@ QJsonObject DabCliApp::statusJson() const
     root["syncLevel"] = m_syncLevel;
     root["snr"] = double(m_snr);
         root["volumePercent"] = m_volumePercent;
+    root["hasEpg"] = hasValidEpgLocked();
     if (m_dabTime.isValid())
     {
         root["dabTime"] = m_dabTime.toString(QStringLiteral("dd.MM.yyyy HH:mm"));
