@@ -1729,17 +1729,29 @@ let epgLastFetch = 0;
 let epgDragged = false;
 let epgSelectedKey = '';
 
+function clearEpgSelection() {
+  epgSelectedKey = '';
+  const sc = document.getElementById('epgScroll');
+  if (sc) sc.querySelectorAll('.epgProg.selected').forEach(el => el.classList.remove('selected'));
+  const box = document.getElementById('epgDetail');
+  if (box) {
+    box.classList.remove('visible');
+    box.innerHTML = '';
+  }
+}
+
 function toggleEpgView(forceState) {
   const layout = document.getElementById('mainLayout');
   const btn = document.getElementById('epgToggleBtn');
   epgOpen = (typeof forceState === 'boolean') ? forceState : !epgOpen;
   if (epgOpen) {
-    layout.classList.add('epgOpen');
+    if (layout) layout.classList.add('epgOpen');
     if (btn) { btn.textContent = 'Zurück'; btn.classList.add('tuned'); }
     loadEpg(true);
   } else {
-    layout.classList.remove('epgOpen');
+    if (layout) layout.classList.remove('epgOpen');
     if (btn) { btn.textContent = 'EPG'; btn.classList.remove('tuned'); }
+    clearEpgSelection();
   }
 }
 
@@ -1766,6 +1778,7 @@ function updateEpgDayBadge() {
 }
 
 function scrollEpgTo(target) {
+  clearEpgSelection();
   const sc = document.getElementById('epgScroll');
   if (!sc) return;
   let x = 0;
@@ -1875,6 +1888,10 @@ function renderEpg(data, autoScroll) {
 
       item.onclick = () => {
         if (epgDragged) return;
+        if (epgSelectedKey === pKey) {
+          clearEpgSelection();
+          return;
+        }
         epgSelectedKey = pKey;
         sc.querySelectorAll('.epgProg.selected').forEach(el => el.classList.remove('selected'));
         item.classList.add('selected');
