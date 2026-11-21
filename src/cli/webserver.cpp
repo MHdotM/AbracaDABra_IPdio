@@ -349,6 +349,175 @@ void WebServer::handleRequest(QTcpSocket *socket, const QString &method, const Q
         return;
     }
 
+    if (("GET" == method || "HEAD" == method) && p.startsWith("/apple-touch-icon") && p.endsWith(".png"))
+    {
+        static const QByteArray icon = QByteArray::fromBase64(
+            "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"
+        );
+        sendResponse(socket, 200, "OK", "image/png", ("HEAD" == method) ? QByteArray() : icon);
+        return;
+    }
+
+    if (("GET" == method || "HEAD" == method) && ("/favicon.png" == p || "/favicon-32x32.png" == p || "/favicon-64x64.png" == p))
+    {
+        static const QByteArray png = QByteArray::fromBase64(
+            "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"
+            "QmCC"
+        );
+        sendResponse(socket, 200, "OK", "image/png", ("HEAD" == method) ? QByteArray() : png);
+        return;
+    }
+
+    if (("GET" == method || "HEAD" == method) && "/favicon.ico" == p)
+    {
+        static const QByteArray ico = QByteArray::fromBase64(
+            "AAABAAEAICAAAAEAIACoEAAAFgAAACgAAAAgAAAAQAAAAAEAIAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAD///8A////AP///wD///8A/v7+P/7+/n/+/v7/"
+            "/v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/n/+/v4/////AP//"
+            "/wD///8A////AP///wD///8A////P/7+/r/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7/"
+            "/v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v6/////P////wD///8A////AP///z/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+"
+            "/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7/////P////wD///8A"
+            "/v7+v/7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+"
+            "/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v6/////AP7+/j/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7/"
+            "/v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v4//v7+f/7+/v/29Nf/7eem/+fj"
+            "lf/59+T/591//+nhjv/i2XD/7+u2/+bcev/+/v7/5t6E/+ffhv/7/fn//v7+//n35P/q45b//v7+/+fdf//i2nX/3dFP/+nik//i2nX/596B/+fgjP/w67P/"
+            "4ddo/+DXaP/7+vH//v7+//7+/n/+/v7//v7+//Xz1P/r5Zv/5t+I//j23//l2nT/3NBM/+bcfP/h1Fv/49dp//z8+P/l23f/5Nx9//r67v/+/v7/+ffk/+Xd"
+            "gP/7/Pb/5dp1//z9+//k2G3/5Nht//z9+//k2W//596B/+bbd//5+Of/6+Sb//Txz//+/v7//v7+//7+/v/+/v7/+fjn/+DVYv/l23n/5Npy//Dqsv/x7Ln/"
+            "5dp0/+/prf/i1WH/5dlx//Dqsv/o5Jv/5Npy//Huwv/6+ev/3dZk/+fegv/s5qP/5dpz//Dtvv/w7b7/5dpz/9zQTP/s5Jn/9PLQ/+Xbdv/m34j//Pz4//7+"
+            "/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+/+nfif/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7/"
+            "/v7+//7+/v/+/v7/6+KU//DtvP/8/Pj//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+"
+            "/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/8/fv//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7/"
+            "/v7+//z79P/x7Lr/3OSc/9Dkmv/Q5Jr/0OSa/83ln//H5aD/wOeo/8Dpr//A6a//wOmv/7npsP+y6bD/sumw/7LpsP+t7Lv/rey7/63su/+n7Lz/nuy9/57u"
+            "xP+e7sT/oO7E/7/02v/0/Pf//v7+//7+/v/+/v7//v7+//7+/v/5+On/1cw+/7zADv+0whX/p8Qe/57GJv+Xxyr/kcgu/4jJNf+Dyzv/ds1F/3HNSP9szkv/"
+            "Y9BU/13RV/9Y0lv/U9Ri/0jVaP9i24D/sO7F/7Lvxv+y78b/su/G/63vyP+n78n/dOiu/03imf/j+ez//v7+//7+/v/+/v7//v7+/97VX//Kvwv/vMAO/7TC"
+            "Ff+owxz/nsYm/5fHKv+RyC7/iMk1/4HLO/93zEL/cc1I/2zOS/9j0FT/XdFX/1jSW/9U02D/SdVp/0jVav/L9Nn//v7+//7+/v/+/v7//v7+//7+/v/+/v7/"
+            "p/DK/2nmp//+/v7//v7+//7+/v/+/v7/y8ER/8m+CP/LzD3/5+OX/97kmv+tzkX/l8cq/5HIMf+t2XD/1uu0/7Xln/+75aL/fNNf/2fRWv+b4pb/xe/I/5jl"
+            "o/9L1mv/SNVn/5fnq//+/v7//v7+/+r68f+88tT//v7+//7+/v/3/Pb/TOGV//7+/v/+/v7//v7+//7+/v/JvgX/08ky//r56//c5qT/3Oms//n56f+kzkf/"
+            "uNx9//H67v/A56b/4PHO//7+/v+N23z/uuir/+n45/+w6K7/3/fn/7btv/9I1Wf/iuan//7+/v/+/v7/vPLU/1Tgkf/+/v7//v7+//7+/v9I4Zb//v7+//7+"
+            "/v/+/v7//v7+/8m+Bf/n4Iv/6emw/7TCFf+owxz/5u/H/8jgjf/m8s//tt2D/4HKOv99z0z/8fry/5Ddhv/v+vD/e9t9/1jSW/9y2nr/9Pv0/1PYcv+K5qf/"
+            "6vrx/8bz1f+a67v/St6M/8bz1f/O9dz//v7+/0jhlv/+/v7//v7+//7+/v/+/v7/yb4F/+Tdf//u7Ln/tMIV/6vEIf/t8s//0OSa/9/vxv++45j/gcs7/4nT"
+            "XP/y+u//iNl3//P79P+T347/WNJb/4Ldhf/w+u//U9hy/4rmp/+78dD/VOCR/0ndiP822nv/TN+Q/2Djnv/4/Pj/SOGW//7+/v/+/v7//v7+//7+/v/JvgX/"
+            "0MUg//H12v/v89P/7/PT//7+/v/Q5Jr/sNRe//f57P/e8dD/8fjn/8vtvv9w017/8/v0//T79P/W89b/8/vy/5/orv9I1Wf/iuan//7+/v/+/v7/wfLV/1Tg"
+            "kf/+/v7//v7+//7+/v9I4Zb//v7+//7+/v/+/v7//v7+/8m+Bf/Jvgj/wsMd/83Xav/C2G7/3u7A/9Dkmv+RyC7/m9FU/7HhkP+a23r/b85L/2/SXP/z+/T/"
+            "kuCP/5bjm/+B3of/S9Rm/0jVZ/+K5qf//v7+//7+/v/J9Nz/auOd//7+/v/+/v7//v7+/0jhlv/+/v7//v7+//7+/v/+/v7/zcIV/8q/C/+8wA7/tMIV/6rD"
+            "G//X67f/0OSa/5HILv+IyTX/gcs7/3bNRf9xzUj/b9Jc//P79P922HD/WNJb/1PUYv9J1Wn/SNVn/5/ps//+/v7//v7+//z9+//3/Pb//v7+//7+/v/x+/T/"
+            "Q+CS//7+/v/+/v7//v7+//7+/v/f2W//yr8L/7zADv+0whX/qMMc/7nUXP+k0FD/kcgx/4jJNf+Dyzv/ds1F/3HNSP9szkz/ouKY/2HSXv9Y0lv/U9Ri/0nV"
+            "af9Q127/3Pfl//7+/v/+/v7//v7+//7+/v/+/v7/+/37/43ru/9+6bH//v7+//7+/v/+/v7//v7+//v68f/a1mX/v8IW/7TCFf+nxB7/nsYm/5fHKv+RyC7/"
+            "iMk1/4PLO/92zUX/cc1I/2zOS/9j0FT/XdFX/1jSW/9T1GL/SNVo/1rafP+Q56z/kOes/5LosP+O6rX/iOq2/4Tptf9e45//ZeWl/+r68f/+/v7//v7+//7+"
+            "/v/+/v7//v7+//7+/v/39t//5+is/83eg/+201v/oMs6/5HIMf+IyTX/jNBR/5/eh/++56j/zu7C/9Xwyv/V8Mr/1fDK/8bz1f/G89X/xvPV/8bz1f/G89X/"
+            "xvPV/8bz1f/G89X/xvPV/9f35v/7/fv//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/7+/L/5vPW/8zorP+z3YH/idRj/3jR"
+            "VP990lv/kNp7/6jlo//O8c//7fnr//z9+//+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7/"
+            "/v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/8/fv/7/rw/97x0P+56K7/jt6J/2zXbf9U12z/YtuA/4bkn/+z78j/1fbg//H79P/+/v7//v7+//7+"
+            "/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7/"
+            "+/37/+n46v/O8c//nemx/3PhlP9F3IP/RdyD/2bimf+P6rj/u/LS/+X57P/+/v7//v7+//7+/v/+/v7//v7+f/7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+"
+            "/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//f89v/X9+b/tvHP/4Hnq/9P4JL/ROCS//X8+P/+/v7/"
+            "/v7+//7+/n/+/v4//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+"
+            "/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+P////wD+/v6//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7/"
+            "/v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/r////8A////AP//"
+            "/z/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7/"
+            "/v7+//7+/v/+/v7//v7+//7+/v/+/v7/////P////wD///8A////AP///z/+/v6//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+"
+            "/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+v////z////8A////AP///wD///8A////AP///wD+/v4/"
+            "/v7+f/7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+//7+/v/+/v7//v7+f/7+"
+            "/j////8A////AP///wD///8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+        );
+        sendResponse(socket, 200, "OK", "image/x-icon", ("HEAD" == method) ? QByteArray() : ico);
+        return;
+    }
+
+    if (("GET" == method || "HEAD" == method) && "/manifest.webmanifest" == p)
+    {
+        static const QByteArray manifest = QByteArrayLiteral(R"JSON({"name":"IPdio DAB Tuner","short_name":"IPdio DAB Tuner","start_url":"/","display":"standalone","background_color":"#111111","theme_color":"#111111","icons":[{"src":"/apple-touch-icon.png?v=2","sizes":"180x180","type":"image/png"}]})JSON");
+        sendResponse(socket, 200, "OK", "application/manifest+json; charset=utf-8", ("HEAD" == method) ? QByteArray() : manifest);
+        return;
+    }
+
+
     if ("POST" == method && "/api/tune" == p)
     {
         QJsonParseError perr;
@@ -616,6 +785,18 @@ QString WebServer::indexHtml()
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="IPdio DAB Tuner">
+<meta name="application-name" content="IPdio DAB Tuner">
+<meta name="theme-color" content="#111111">
+<link rel="shortcut icon" href="/favicon.ico?v=2">
+<link rel="icon" type="image/x-icon" href="/favicon.ico?v=2">
+<link rel="icon" type="image/png" sizes="64x64" href="/favicon.png?v=2">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png?v=2">
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=2">
+<link rel="manifest" href="/manifest.webmanifest?v=2">
 <title>AbracaDABra &mdash; dnt IPdio mini Web-UI</title>
 <style>
   :root { color-scheme: dark; }
@@ -653,6 +834,7 @@ QString WebServer::indexHtml()
   .stat.wide { grid-column: 1 / -1; }
   .statSplit { grid-column: 1 / -1; display:flex; flex-wrap:wrap; gap:.75rem; align-items:flex-start; }
   .statSender { flex: 0 1 180px; min-width:140px; }
+  .statCodec { flex: 0 1 120px; min-width:95px; }
   .statTime { flex: 0 1 160px; min-width:130px; }
   .statTitle { flex: 1 1 220px; min-width:180px; }
   .stat label { display:block; font-size:.72rem; color:#999; text-transform:uppercase; letter-spacing:.05em; }
@@ -722,9 +904,16 @@ QString WebServer::indexHtml()
   .epgProg.selected { box-shadow:0 0 0 2px #93c5fd; }
   .epgProgTitle { font-size:.8rem; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .epgProgTime { font-size:.69rem; color:#9ca3af; white-space:nowrap; }
-  .epgNowLine { position:absolute; top:32px; bottom:0; width:2px; background:#ef4444; z-index:5; pointer-events:none; }
+  .epgNowLine { position:absolute; top:32px; bottom:0; width:2px; background:#ef4444; z-index:2; pointer-events:none; }
   #epgDetail { display:none; background:#161616; border:1px solid #333; border-radius:6px; padding:.7rem .85rem; font-size:.88rem; }
   #epgDetail.visible { display:block; }
+  @media (max-width: 767px) {
+    html { font-size:14px; }
+    body { padding:.85rem; }
+    .card { padding:.8rem; }
+    h1 { font-size:1.12rem; }
+    .stat span { font-size:.96rem; }
+  }
 </style>
 </head>
 <body>
@@ -738,6 +927,13 @@ QString WebServer::indexHtml()
     <div class="cardHead">
       <h2>Senderliste <span id="stationCount" class="muted">(0)</span></h2>
       <button id="scanBtn" class="btnSm" onclick="toggleScan()">Suchlauf</button>
+    </div>
+    <div id="scanConfirmBox" style="display:none; background:#261b1b; border:1px solid #7f1d1d; border-radius:6px; padding:.55rem .65rem; margin-bottom:.5rem;">
+      <div style="font-size:.84rem; color:#fecaca; margin-bottom:.45rem;">Aktuelle Senderliste wird gelöscht! Fortfahren?</div>
+      <div class="row" style="justify-content:flex-end;">
+        <button class="btnSm" onclick="cancelScanConfirm()">Abbrechen</button>
+        <button class="btnSm" style="background:#991b1b; border-color:#dc2626; color:#fff;" onclick="confirmAndStartScan()">Suchlauf</button>
+      </div>
     </div>
     <div id="scanInfo" class="muted" style="margin-bottom:.45rem; display:none;"></div>
     <input type="search" id="stationFilter" placeholder="Sender filtern..." oninput="renderStationList()">
@@ -766,6 +962,7 @@ QString WebServer::indexHtml()
         <div class="stat"><label>SNR</label><span id="snr">-</span></div>
         <div class="stat wide statSplit">
           <div class="stat statSender"><label>Sender</label><span id="nowplaying">-</span></div>
+          <div class="stat statCodec"><label>Audio-Codec</label><span id="audioCodec">-</span></div>
           <div class="stat statTime"><label>DAB-Zeit</label><span id="dabTime">-</span></div>
           <div class="stat statTitle"><label>Titel (DL+)</label><span id="title">-</span></div>
         </div>
@@ -782,6 +979,7 @@ QString WebServer::indexHtml()
           <button id="syncStreamBtn" class="btnSm" onclick="syncToStream()">Auf S/PDIF übernehmen</button>
         </div>
         <div class="stat"><label>Webstream Sender</label><span id="streamLabel">-</span></div>
+        <div class="stat"><label>Audio-Codec</label><span id="streamAudioCodec">-</span></div>
         <div class="stat"><label>Webstream Titel (DL+)</label><span id="streamTitle">-</span></div>
         <div class="stat wide"><label>Webstream Radiotext (DLS)</label><span id="streamDls">-</span></div>
       </div>
@@ -866,6 +1064,14 @@ let tuneSeq = 0;
 let browserPlayingKey = '';
 let browserStreaming = false;
 let lastListRefresh = 0;
+let lastStationSig = '';
+let lastServicesSig = '';
+let uiPointerDown = false;
+document.addEventListener('pointerdown', (e) => {
+  if (e.target && e.target.closest && e.target.closest('#stationList, #services')) uiPointerDown = true;
+}, true);
+document.addEventListener('pointerup', () => { uiPointerDown = false; }, true);
+document.addEventListener('pointercancel', () => { uiPointerDown = false; }, true);
 const CU_PALETTE = ['#4285F4','#EA4335','#FBBC05','#34A853','#9C27B0','#FF9800','#00BCD4','#795548'];
 
 function normSid(v){
@@ -903,8 +1109,8 @@ function isStreamServiceActive(sid, scids, ch, statusObj){
   return browserPlayingKey === svcKey(sid, scids);
 }
 
-async function ensureStatus(){
-  if (lastStatus) return lastStatus;
+async function ensureStatus(forceFresh = false){
+  if (!forceFresh && lastStatus) return lastStatus;
   try {
     const r = await fetch('/api/status');
     lastStatus = await r.json();
@@ -956,7 +1162,9 @@ async function tuneOnly(sid, scids, ch){
   const fb = document.getElementById('tuneFeedback');
   const tgtSid = normSid(sid);
   const tgtScids = Number(scids || 0);
-  const s = await ensureStatus();
+  if (fb) fb.textContent = 'Stelle Sender ein...';
+  const s = await ensureStatus(true);
+  if (mySeq !== tuneSeq) return false;
   const curCh = (s && s.channel) ? String(s.channel).toUpperCase() : '';
   const wantCh = ch ? String(ch).toUpperCase() : '';
 
@@ -967,7 +1175,7 @@ async function tuneOnly(sid, scids, ch){
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({channel: ch})
     });
-    for (let i = 0; i < 18; i++) {
+    for (let i = 0; i < 28; i++) {
       if (mySeq !== tuneSeq) return false;
       await new Promise(res => setTimeout(res, 300));
       try {
@@ -984,7 +1192,7 @@ async function tuneOnly(sid, scids, ch){
   if (mySeq !== tuneSeq) return false;
   if (fb) fb.textContent = 'Stelle Sender ein...';
   let ok = false;
-  for (let attempt = 0; attempt < 4; attempt++) {
+  for (let attempt = 0; attempt < 5; attempt++) {
     if (mySeq !== tuneSeq) return false;
     try {
       const resp = await fetch('/api/service', {
@@ -999,7 +1207,15 @@ async function tuneOnly(sid, scids, ch){
     } catch (e) {}
     await new Promise(res => setTimeout(res, 500));
   }
-  if (fb) fb.textContent = '';
+  if (mySeq !== tuneSeq) return false;
+  if (fb) {
+    if (ok) {
+      fb.textContent = '';
+    } else {
+      fb.textContent = 'Senderwechsel fehlgeschlagen – bitte erneut versuchen';
+      setTimeout(() => { if (mySeq === tuneSeq && fb.textContent.startsWith('Senderwechsel')) fb.textContent = ''; }, 3500);
+    }
+  }
   await refresh();
   return ok;
 }
@@ -1032,13 +1248,13 @@ function makeActionButtons(sid, scids, ch){
   const bPlaying = browserStreaming && isStreamServiceActive(sid, scids, ch);
 
   const btnTune = document.createElement('button');
-  btnTune.className = 'btnSm' + (active ? ' tuned' : '');
+  btnTune.className = 'btnSm btnTune' + (active ? ' tuned' : '');
   btnTune.textContent = 'Tune';
   btnTune.title = 'Lokal (S/PDIF) einstellen (im gleichen Ensemble bleibt Webstream unabhängig)';
   btnTune.onclick = () => tuneService(sid, scids, ch);
 
   const btnPlay = document.createElement('button');
-  btnPlay.className = 'btnSm' + (bPlaying ? ' playing' : '');
+  btnPlay.className = 'btnSm btnPlay' + (bPlaying ? ' playing' : '');
   btnPlay.textContent = bPlaying ? 'Playing' : 'Play';
   btnPlay.title = 'Im Browser abspielen (im gleichen Ensemble unabhängig von S/PDIF)';
   btnPlay.onclick = () => playService(sid, scids, ch);
@@ -1053,7 +1269,6 @@ function renderStationList(){
   const cnt = document.getElementById('stationCount');
   const q = (document.getElementById('stationFilter').value || '').trim().toLowerCase();
   cnt.textContent = '(' + scannedStations.length + ')';
-  box.innerHTML = '';
 
   const filtered = scannedStations.filter(st => {
     if (!q) return true;
@@ -1063,14 +1278,45 @@ function renderStationList(){
   });
 
   if (!filtered.length) {
+    const emptySig = 'EMPTY:' + (scannedStations.length > 0 ? '1' : '0') + ':' + (scanning ? '1' : '0');
+    if (emptySig === lastStationSig && box.children.length > 0 && !box.querySelector('.stRow')) return;
+    if (uiPointerDown) return;
+    lastStationSig = emptySig;
+    box.innerHTML = '';
     const msg = document.createElement('div');
     msg.className = 'muted';
     msg.textContent = scannedStations.length
       ? 'Keine Treffer fuer diesen Filter.'
-      : 'Noch kein Suchlauf gespeichert. Klicke auf "Suchlauf" oder nutze am Frontpanel Reply -> Sendersuchlauf.';
+      : (scanning
+          ? 'Suchlauf läuft – Senderliste wird neu aufgebaut...'
+          : 'Noch kein Suchlauf gespeichert. Klicke auf "Suchlauf" oder nutze am Frontpanel Reply -> Sendersuchlauf.');
     box.appendChild(msg);
     return;
   }
+
+  const listSig = filtered.map(st => [st.sid || st.id, Number(st.scids || 0), st.channel || '', st.name || st.label || ''].join('|')).join(';');
+  const curRows = box.querySelectorAll('.stRow');
+  if (listSig === lastStationSig && curRows.length === filtered.length) {
+    curRows.forEach(row => {
+      const rSid = row.dataset.sid || '';
+      const rScids = Number(row.dataset.scids || 0);
+      const rCh = row.dataset.ch || '';
+      const active = isServiceActive(rSid, rScids, rCh);
+      const bPlaying = browserStreaming && isStreamServiceActive(rSid, rScids, rCh);
+      row.classList.toggle('active', active);
+      const bT = row.querySelector('.btnTune');
+      if (bT) bT.classList.toggle('tuned', active);
+      const bP = row.querySelector('.btnPlay');
+      if (bP) {
+        bP.classList.toggle('playing', bPlaying);
+        bP.textContent = bPlaying ? 'Playing' : 'Play';
+      }
+    });
+    return;
+  }
+  if (uiPointerDown) return;
+  lastStationSig = listSig;
+  box.innerHTML = '';
 
   filtered.forEach(st => {
     const sid = st.sid || st.id;
@@ -1080,6 +1326,9 @@ function renderStationList(){
 
     const row = document.createElement('div');
     row.className = 'stRow' + (active ? ' active' : '');
+    row.dataset.sid = String(sid);
+    row.dataset.scids = String(scids);
+    row.dataset.ch = String(ch);
 
     const meta = document.createElement('div');
     meta.className = 'stMeta';
@@ -1105,13 +1354,37 @@ function renderStationList(){
 
 function renderServicesTable(s){
   const tbody = document.getElementById('services');
-  tbody.innerHTML = '';
   const ch = (s && s.channel) ? s.channel : '';
   const eb = document.getElementById('ensembleBadge');
   if (eb) eb.textContent = ch ? ('Kanal ' + ch) : '';
 
-  (s && s.services ? s.services : []).forEach(svc => {
+  const svcs = (s && Array.isArray(s.services)) ? s.services : [];
+  const svcSig = ch + '|' + svcs.map(svc => [svc.sid, Number(svc.scids || 0), svc.label || '', svc.subChId || 0, svc.bitRate || 0].join(',')).join(';');
+  const curRows = tbody.querySelectorAll('tr');
+  if (svcSig === lastServicesSig && curRows.length === svcs.length) {
+    curRows.forEach(tr => {
+      const rSid = tr.dataset.sid || '';
+      const rScids = Number(tr.dataset.scids || 0);
+      const active = isServiceActive(rSid, rScids, ch);
+      const bPlaying = browserStreaming && isStreamServiceActive(rSid, rScids, ch);
+      const bT = tr.querySelector('.btnTune');
+      if (bT) bT.classList.toggle('tuned', active);
+      const bP = tr.querySelector('.btnPlay');
+      if (bP) {
+        bP.classList.toggle('playing', bPlaying);
+        bP.textContent = bPlaying ? 'Playing' : 'Play';
+      }
+    });
+    return;
+  }
+  if (uiPointerDown) return;
+  lastServicesSig = svcSig;
+  tbody.innerHTML = '';
+
+  svcs.forEach(svc => {
     const tr = document.createElement('tr');
+    tr.dataset.sid = String(svc.sid);
+    tr.dataset.scids = String(Number(svc.scids || 0));
 
     const tdLabel = document.createElement('td');
     tdLabel.textContent = svc.label;
@@ -1182,24 +1455,53 @@ function renderAllLists(){
   if (lastStatus) renderServicesTable(lastStatus);
 }
 
-async function toggleScan(){
+function toggleScan(){
   if (scanning) {
     scanAbort = true;
     document.getElementById('scanBtn').disabled = true;
     return;
   }
+  const cbox = document.getElementById('scanConfirmBox');
+  if (cbox) {
+    cbox.style.display = (cbox.style.display === 'none' || !cbox.style.display) ? 'block' : 'none';
+  }
+}
+
+function cancelScanConfirm(){
+  const cbox = document.getElementById('scanConfirmBox');
+  if (cbox) cbox.style.display = 'none';
+}
+
+function confirmAndStartScan(){
+  cancelScanConfirm();
+  startScan();
+}
+
+async function startScan(){
+  if (scanning) return;
   scanning = true;
   scanAbort = false;
   const btn = document.getElementById('scanBtn');
   const info = document.getElementById('scanInfo');
   btn.textContent = 'Abbrechen';
   info.style.display = 'block';
-  info.textContent = 'Starte Band-III Suchlauf...';
+  info.textContent = 'Leere Senderliste und starte Band-III Suchlauf...';
 
   const prev = lastStatus;
   const prevCh = prev && prev.channel ? prev.channel : '';
   const prevSid = prev && prev.current && prev.current.playing ? prev.current.sid : '';
   const prevScids = prev && prev.current ? Number(prev.current.scids || 0) : 0;
+
+  scannedStations = [];
+  if (typeof lastStationSig !== 'undefined') lastStationSig = '';
+  renderStationList();
+  try {
+    await fetch('/api/stationlist', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({stations: [], stations_scanned: false})
+    });
+  } catch (e) {}
 
   try {
     const chResp = await fetch('/api/channels');
@@ -1247,12 +1549,21 @@ async function toggleScan(){
       });
       renderStationList();
       info.textContent = 'Suchlauf fertig: ' + list.length + ' Sender gespeichert.';
-      if (prevSid && prevCh) {
+      const prevMatch = prevSid && prevCh && list.some(x => normSid(x.sid) === normSid(prevSid) && String(x.channel).toUpperCase() === String(prevCh).toUpperCase());
+      if (prevMatch) {
         await tuneOnly(prevSid, prevScids, prevCh);
       } else {
         await tuneOnly(list[0].sid, list[0].scids, list[0].channel);
       }
     } else {
+      scannedStations = [];
+      if (typeof lastStationSig !== 'undefined') lastStationSig = '';
+      await fetch('/api/stationlist', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({stations: [], stations_scanned: false})
+      }).catch(() => {});
+      renderStationList();
       info.textContent = scanAbort ? 'Suchlauf abgebrochen.' : 'Keine Sender gefunden.';
     }
   } catch (e) {
@@ -1263,6 +1574,7 @@ async function toggleScan(){
     scanAbort = false;
     btn.disabled = false;
     btn.textContent = 'Suchlauf';
+    renderStationList();
   }
 }
 )HTML");
@@ -1307,7 +1619,7 @@ async function playService(sid, scids, ch){
   lastCh = ch || '';
   stopPlayback(false);
 
-  const curStatus = await ensureStatus();
+  const curStatus = await ensureStatus(true);
   const curCh = (curStatus && curStatus.channel) ? String(curStatus.channel).toUpperCase() : '';
   const wantCh = ch ? String(ch).toUpperCase() : '';
   const needMuxTune = !curStatus || !curStatus.current || !curStatus.current.playing || (wantCh && curCh && wantCh !== curCh);
@@ -1447,7 +1759,7 @@ async function playService(sid, scids, ch){
 
   stopPlayback(false);
 
-  const curStatus = await ensureStatus();
+  const curStatus = await ensureStatus(true);
   const curCh = (curStatus && curStatus.channel) ? String(curStatus.channel).toUpperCase() : '';
   const wantCh = ch ? String(ch).toUpperCase() : '';
   const needMuxTune = !curStatus || !curStatus.current || !curStatus.current.playing || (wantCh && curCh && wantCh !== curCh);
@@ -1532,6 +1844,14 @@ async function playService(sid, scids, ch){
 function fmtSync(level){
   return ({0:'No sync', 1:'Null sync', 2:'Full sync'})[level] ?? level;
 }
+function fmtAudioCodec(audio){
+  if (!audio) return '-';
+  if (audio.coding === 0) return 'MP2';
+  if (audio.coding === 3 || (audio.sbr && audio.parametricStereo)) return 'HE-AAC v2';
+  if (audio.coding === 2 || audio.sbr) return 'HE-AAC v1';
+  if (audio.coding === 1) return 'AAC-LC';
+  return 'DAB+';
+}
 async function refresh(){
   try {
     const r = await fetch('/api/status');
@@ -1544,6 +1864,7 @@ async function refresh(){
     document.getElementById('sync').textContent = fmtSync(s.syncLevel);
     document.getElementById('snr').textContent = (s.snr ?? 0).toFixed(1) + ' dB';
     document.getElementById('nowplaying').textContent = (s.current && s.current.playing) ? s.current.label : '(none)';
+    document.getElementById('audioCodec').textContent = (s.current && s.current.playing) ? fmtAudioCodec(s.current.audio) : '-';
     document.getElementById('dabTime').textContent = s.dabTime || '-';
 
     const chSel = document.getElementById('channelSelect');
@@ -1625,6 +1946,7 @@ async function refresh(){
       if (streamObj.decoupled) {
         streamCard.style.display = 'flex';
         document.getElementById('streamLabel').textContent = streamObj.label || '-';
+        document.getElementById('streamAudioCodec').textContent = fmtAudioCodec(streamObj.audio);
         let sTitle = '-';
         if (streamObj.dlPlusTitle) {
           sTitle = streamObj.dlPlusArtist ? (streamObj.dlPlusArtist + ' - ' + streamObj.dlPlusTitle) : streamObj.dlPlusTitle;
