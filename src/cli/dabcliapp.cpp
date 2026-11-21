@@ -499,6 +499,7 @@ bool DabCliApp::openInputDevice()
                 dev->setGainMode(RtlGainMode::Software);
             }
             dev->setBW(m_config.bandwidthKHz * 1000u);
+            dev->setPPM(m_config.ppm);
             break;
         }
         case CliDeviceType::RTLTCP:
@@ -518,6 +519,7 @@ bool DabCliApp::openInputDevice()
                 return false;
             }
             dev->setBW(m_config.bandwidthKHz * 1000u);
+            dev->setPPM(m_config.ppm);
             break;
         }
     }

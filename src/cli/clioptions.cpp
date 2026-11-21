@@ -82,6 +82,7 @@ int parseCliArguments(QCoreApplication &app, CliConfig *config)
     QCommandLineOption gainOpt("gain", "Manual RTL-SDR gain index (default: software AGC).", "index");
     QCommandLineOption hardwareAgcOpt("hardware-agc", "Use the RTL-SDR's own hardware AGC instead of software AGC (RTL-SDR only).");
     QCommandLineOption bandwidthOpt("bandwidth", "Tuner bandwidth in kHz for rtlsdr/rtltcp (default: 1530, 0 = default).", "kHz");
+    QCommandLineOption ppmOpt("ppm", "Frequency correction in ppm for rtlsdr/rtltcp, e.g. --ppm=-4 (default: 0).", "ppm");
 
     QCommandLineOption listChannelsOpt("list-channels", "Print the DAB channel table and exit.");
     QCommandLineOption commandlineOnlyOpt("commandline-only", "Disable the interactive terminal dashboard (TUI) and log to commandline instead, "
@@ -105,6 +106,7 @@ int parseCliArguments(QCoreApplication &app, CliConfig *config)
     parser.addOption(gainOpt);
     parser.addOption(hardwareAgcOpt);
     parser.addOption(bandwidthOpt);
+    parser.addOption(ppmOpt);
     parser.addOption(listChannelsOpt);
     parser.addOption(commandlineOnlyOpt);
     parser.addOption(verboseOpt);
@@ -205,6 +207,17 @@ int parseCliArguments(QCoreApplication &app, CliConfig *config)
             return 1;
         }
         config->bandwidthKHz = bwKHz;
+    }
+    if (parser.isSet(ppmOpt))
+    {
+        bool ok = false;
+        int ppmVal = parser.value(ppmOpt).toInt(&ok);
+        if (!ok || ppmVal < -300 || ppmVal > 300)
+        {
+            fprintf(stderr, "Invalid --ppm value '%s' (expected integer between -300 and 300).\n", qPrintable(parser.value(ppmOpt)));
+            return 1;
+        }
+        config->ppm = ppmVal;
     }
     config->verboseLevel = verboseLevel;
     config->commandlineOnly = forceCommandlineOnly;

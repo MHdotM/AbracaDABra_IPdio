@@ -103,6 +103,7 @@ struct CliConfig
     bool hardwareAgc = false;
     int manualGainIndex = -1;
     uint32_t bandwidthKHz = 0;
+    int ppm = 0;
 
     int verboseLevel = 0;
     // true if verboseLevel >= 2 or --commandline-only was given: disables the interactive
